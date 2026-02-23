@@ -1,6 +1,6 @@
 # Simulator Inference Center
 
-ZMQ-based inference server that exposes robot simulators (e.g. LIBERO) over a network protocol for remote policy evaluation.
+ZMQ-based inference server that exposes robot simulators (e.g. LIBERO, robosuite) over a network protocol for remote policy evaluation.
 
 ## Quick Start
 
@@ -12,6 +12,10 @@ python scripts/run_server.py --simulator libero --port 5555
 pytest tests/test_server.py -v
 # Run Libero integration tests (requires GPU + libero install)
 pytest tests/test_libero_backend.py -v
+# Start server (robosuite backend)
+python scripts/run_server.py --simulator robosuite --port 5555
+# Run robosuite integration tests (requires robosuite install)
+pytest tests/test_robosuite_backend.py -v
 ```
 
 ## Conda Environment
@@ -19,6 +23,7 @@ pytest tests/test_libero_backend.py -v
 - **Name:** `sim_inference_center` (cloned from `libero` env)
 - **Python:** 3.8.13 -- all code uses `from __future__ import annotations` for modern type hint syntax
 - **Libero source:** editable install from `/home/jaroslaw/Code/LIBERO_Workspace/LIBERO`
+- **Robosuite:** v1.4.0 installed in env
 - **Project install:** editable via `pip install -e .`
 
 ## Project Structure
@@ -29,11 +34,12 @@ src/simulator_inference_center/
     server.py               # InferenceServer: ZMQ ROUTER socket, poll loop, message dispatch
     session.py              # Session dataclass (per-client state)
     backend.py              # SimulatorBackend ABC (list_tasks, load_task, reset, step, get_info, close)
-    config.py               # ServerConfig + LiberoBackendConfig (pydantic-settings, SIM_ env prefix)
+    config.py               # ServerConfig + LiberoBackendConfig + RobosuiteBackendConfig (pydantic-settings, SIM_ env prefix)
     protocol.py             # msgpack pack/unpack, encode_ndarray/decode_ndarray
     backends/
         __init__.py         # Backend registry: register_backend(), get_backend_class()
         libero.py           # LiberoBackend implementation
+        robosuite.py        # RobosuiteBackend implementation
 client/
     client.py               # SimulatorClient: ZMQ DEALER client with context manager
     example.py              # Full lifecycle example script
@@ -42,6 +48,7 @@ scripts/
 tests/
     test_server.py          # Server dispatch tests using MockBackend (no simulator needed)
     test_libero_backend.py  # Libero integration tests (skipped if libero not available)
+    test_robosuite_backend.py # Robosuite integration tests (skipped if robosuite not available)
 docs/
     architecture.md         # Full system design (socket types, session lifecycle, error handling)
     message_schema.md       # Wire protocol: all request/response schemas, ndarray encoding
@@ -86,6 +93,14 @@ Via env vars (prefix `SIM_`) or ServerConfig constructor:
 | SIM_LIBERO_RENDER_WIDTH| 256              | Render width                    |
 | SIM_LIBERO_RENDER_HEIGHT| 256             | Render height                   |
 | SIM_LIBERO_MAX_EPISODE_STEPS | 300       | Max steps per episode           |
+| SIM_ROBOSUITE_ROBOT    | Panda            | Robot name (Panda, Sawyer, etc) |
+| SIM_ROBOSUITE_CONTROLLER | (none)         | Controller type (OSC_POSE, etc) |
+| SIM_ROBOSUITE_RENDER_WIDTH | 256          | Camera image width              |
+| SIM_ROBOSUITE_RENDER_HEIGHT | 256         | Camera image height             |
+| SIM_ROBOSUITE_CAMERA_NAMES | agentview,robot0_eye_in_hand | Comma-sep camera names |
+| SIM_ROBOSUITE_USE_CAMERA_OBS | true       | Include camera observations     |
+| SIM_ROBOSUITE_HORIZON  | 1000             | Max steps per episode           |
+| SIM_ROBOSUITE_REWARD_SHAPING | false      | Dense reward shaping            |
 
 ## Adding a New Backend
 
@@ -99,4 +114,5 @@ Via env vars (prefix `SIM_`) or ServerConfig constructor:
 
 - `test_server.py` uses a `MockBackend` registered as `"mock"` -- tests all dispatch paths, error cases, session cleanup. No GPU or simulator needed.
 - `test_libero_backend.py` uses the real `LiberoBackend` -- auto-skipped if libero is not installed. Requires GPU.
+- `test_robosuite_backend.py` uses the real `RobosuiteBackend` -- auto-skipped if robosuite is not installed.
 - Server tests spin up a real ZMQ server in a background thread on port 15555.
