@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simulator-inference-center"
+version = "0.1.0"
+description = "ZMQ-based simulator inference server for robot learning"
+requires-python = ">=3.8"
+dependencies = [
+    "pyzmq>=25.0",
+    "msgpack>=1.0",
+    "numpy>=1.24",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+]
+
+[project.scripts]
+sim-server = "simulator_inference_center.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
