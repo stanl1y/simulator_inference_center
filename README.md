@@ -16,14 +16,31 @@ Simulator Inference Center decouples policy code from simulator code by running 
 
 ## Installation
 
+### 1. Set up the LIBERO conda environment
+
 ```bash
-# Clone and install in a conda environment
-conda create -n sim_inference_center python=3.8
-conda activate sim_inference_center
+conda create -n libero python=3.8.13
+conda activate libero
+export PYTHONNOUSERSITE=1
+
+git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git
+cd LIBERO
+
+# Ensure core build tools are up to date
+python -m pip install --upgrade setuptools wheel packaging
+
+pip install -r requirements.txt
+pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 \
+    --extra-index-url https://download.pytorch.org/whl/cu113
 pip install -e .
 ```
 
-For the LIBERO backend, you also need an editable install of LIBERO with its dependencies (GPU required).
+### 2. Install Simulator Inference Center
+
+```bash
+cd /path/to/simulator_inference_center
+pip install -e .
+```
 
 ## Quick Start
 
