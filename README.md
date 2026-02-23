@@ -60,12 +60,12 @@ pip install -e .
 **Start the server:**
 
 ```bash
+conda activate sim_inference_center
+
 # Libero backend on default port
-conda activate libero
 python scripts/run_server.py --simulator libero --port 5555
 
 # Robosuite backend
-conda activate robosuite
 python scripts/run_server.py --simulator robosuite --port 5555
 
 # With environment variables
