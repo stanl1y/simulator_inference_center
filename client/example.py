@@ -12,6 +12,12 @@ import sys
 
 import numpy as np
 
+import os
+import sys
+
+# Allow running as `python client/example.py` from the project root.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from client.client import SimulatorClient
 
 
