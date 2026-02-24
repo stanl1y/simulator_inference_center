@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -22,7 +22,13 @@ from simulator_inference_center.backends import register_backend
 from simulator_inference_center.config import RobosuiteBackendConfig
 from simulator_inference_center.protocol import encode_ndarray
 
+if TYPE_CHECKING:
+    from simulator_inference_center.task_store import RobosuiteTaskConfig, TaskStore
+
 logger = logging.getLogger(__name__)
+
+# Prefix used to distinguish custom tasks from built-in environments.
+CUSTOM_TASK_PREFIX = "custom:"
 
 # Tasks that require two robot arms.
 _TWO_ARM_TASKS = {
@@ -50,16 +56,23 @@ def _encode_observation(raw_obs: dict) -> dict[str, Any]:
 class RobosuiteBackend(SimulatorBackend):
     """Backend wrapping the robosuite robotic manipulation simulator.
 
-    Exposes all environments from ``robosuite.ALL_ENVIRONMENTS`` via the
-    standard ``SimulatorBackend`` interface.
+    Exposes all environments from ``robosuite.ALL_ENVIRONMENTS`` plus any
+    custom tasks loaded from a :class:`TaskStore`.
     """
 
-    def __init__(self, config: RobosuiteBackendConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: RobosuiteBackendConfig | None = None,
+        task_store: TaskStore | None = None,
+    ) -> None:
         self._config = config or RobosuiteBackendConfig()
+        self._task_store = task_store
+        self._custom_tasks: dict[str, RobosuiteTaskConfig] = {}
         self._env = None
         self._current_task: str | None = None
         self._needs_reset: bool = False
         self._episode_steps: int = 0
+        self._load_custom_tasks()
 
     # ------------------------------------------------------------------
     # Internals
@@ -80,15 +93,32 @@ class RobosuiteBackend(SimulatorBackend):
             return [self._config.robot, self._config.robot]
         return self._config.robot
 
+    def _load_custom_tasks(self) -> None:
+        """Load custom tasks from the TaskStore at init."""
+        if self._task_store is None:
+            return
+        for config in self._task_store.list_robosuite_tasks():
+            self.register_custom_task(config)
+        if self._custom_tasks:
+            logger.info("Loaded %d custom robosuite tasks", len(self._custom_tasks))
+
+    def register_custom_task(self, config: RobosuiteTaskConfig) -> None:
+        """Register a custom task for inclusion in list_tasks / load_task."""
+        prefixed = CUSTOM_TASK_PREFIX + config.task_name
+        self._custom_tasks[prefixed] = config
+
     # ------------------------------------------------------------------
     # SimulatorBackend interface
     # ------------------------------------------------------------------
 
     def list_tasks(self) -> list[str]:
-        return list(robosuite.ALL_ENVIRONMENTS)
+        return list(robosuite.ALL_ENVIRONMENTS) + sorted(self._custom_tasks.keys())
 
     def load_task(self, task_name: str) -> dict[str, Any]:
-        if task_name not in robosuite.ALL_ENVIRONMENTS:
+        is_custom = task_name in self._custom_tasks
+        is_builtin = task_name in robosuite.ALL_ENVIRONMENTS
+
+        if not is_custom and not is_builtin:
             raise ValueError(
                 f"Unknown task {task_name!r}. "
                 f"Use list_tasks() to see available tasks."
@@ -97,28 +127,48 @@ class RobosuiteBackend(SimulatorBackend):
         # Close any existing env before loading a new one.
         self._close_env()
 
-        camera_list = [
-            c.strip() for c in self._config.camera_names.split(",") if c.strip()
-        ]
+        if is_custom:
+            custom_cfg = self._custom_tasks[task_name]
+            env_name = custom_cfg.base_env
+            robot = custom_cfg.robot
+            camera_list = custom_cfg.camera_names
+            horizon = custom_cfg.horizon
+            reward_shaping = custom_cfg.reward_type == "dense"
+            controller_name = custom_cfg.controller
+        else:
+            env_name = task_name
+            robot = self._config.robot
+            camera_list = [
+                c.strip() for c in self._config.camera_names.split(",") if c.strip()
+            ]
+            horizon = self._config.horizon
+            reward_shaping = self._config.reward_shaping
+            controller_name = self._config.controller
+
+        # Determine robot(s) for the environment.
+        if env_name in _TWO_ARM_TASKS:
+            robots = [robot, robot]
+        else:
+            robots = robot
 
         # Build controller config if specified.
         controller_config = None
-        if self._config.controller is not None:
+        if controller_name is not None:
             controller_config = suite_controllers.load_controller_config(
-                default_controller=self._config.controller,
+                default_controller=controller_name,
             )
 
         self._env = robosuite.make(
-            env_name=task_name,
-            robots=self._robots_for_task(task_name),
+            env_name=env_name,
+            robots=robots,
             has_renderer=False,
             has_offscreen_renderer=self._config.use_camera_obs,
             use_camera_obs=self._config.use_camera_obs,
             camera_names=camera_list,
             camera_heights=self._config.render_height,
             camera_widths=self._config.render_width,
-            horizon=self._config.horizon,
-            reward_shaping=self._config.reward_shaping,
+            horizon=horizon,
+            reward_shaping=reward_shaping,
             controller_configs=controller_config,
         )
 
@@ -138,8 +188,10 @@ class RobosuiteBackend(SimulatorBackend):
                 "low": action_low.tolist(),
                 "high": action_high.tolist(),
             },
-            "max_episode_steps": self._config.horizon,
+            "max_episode_steps": horizon,
         }
+        if is_custom:
+            task_info["description"] = self._custom_tasks[task_name].description
 
         logger.info("Loaded robosuite task %r", task_name)
         return task_info
@@ -205,7 +257,7 @@ class RobosuiteBackend(SimulatorBackend):
             "backend_name": "robosuite",
             "backend_version": "0.1.0",
             "current_task": self._current_task,
-            "num_tasks": len(robosuite.ALL_ENVIRONMENTS),
+            "num_tasks": len(robosuite.ALL_ENVIRONMENTS) + len(self._custom_tasks),
             "action_space": None,
             "observation_space": None,
         }

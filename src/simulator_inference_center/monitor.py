@@ -19,17 +19,26 @@ class ServerMonitor:
         self._total_requests = 0
         self._backend_name: str = ""
         self._bind_address: str = ""
+        self._available_backends: list[str] = []
         # session_id (hex str) -> session snapshot dict
         self._sessions: dict[str, dict[str, Any]] = {}
         # session_id (hex str) -> {camera_name: np.ndarray}
         self._latest_images: dict[str, dict[str, np.ndarray]] = {}
         # ring buffer of recent log lines
         self._log_buffer: collections.deque[str] = collections.deque(maxlen=100)
+        # Callbacks invoked when a custom task is created via the dashboard.
+        self._task_created_callbacks: list[Any] = []
 
-    def set_server_info(self, *, backend: str, bind_address: str) -> None:
+    def set_server_info(
+        self,
+        *,
+        bind_address: str,
+        available_backends: list[str] | None = None,
+    ) -> None:
         with self._lock:
-            self._backend_name = backend
             self._bind_address = bind_address
+            if available_backends is not None:
+                self._available_backends = list(available_backends)
 
     def on_session_created(self, identity: bytes, session: Any) -> None:
         sid = identity.hex()
@@ -66,11 +75,33 @@ class ServerMonitor:
         with self._lock:
             self._log_buffer.append(line)
 
+    def register_task_created_callback(self, fn: Any) -> None:
+        """Register a callback invoked when a custom task is created.
+
+        The callback signature is ``fn(backend: str, task_name: str, **kwargs)``.
+        """
+        with self._lock:
+            self._task_created_callbacks.append(fn)
+
+    def notify_task_created(self, backend: str, task_name: str, **kwargs: Any) -> None:
+        """Invoke all registered task-created callbacks."""
+        with self._lock:
+            callbacks = list(self._task_created_callbacks)
+        for cb in callbacks:
+            try:
+                cb(backend, task_name, **kwargs)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Task-created callback failed", exc_info=True
+                )
+
     def get_snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "backend_name": self._backend_name,
                 "bind_address": self._bind_address,
+                "available_backends": list(self._available_backends),
                 "uptime_s": time.time() - self._start_time,
                 "total_requests": self._total_requests,
                 "sessions": dict(self._sessions),
@@ -83,6 +114,16 @@ class ServerMonitor:
 
     @staticmethod
     def _snapshot_session(sid: str, session: Any) -> dict[str, Any]:
+        if session.backend is None:
+            return {
+                "session_id": sid[:12],
+                "simulator": session.simulator_name or "(none)",
+                "task": "(none)",
+                "steps": 0,
+                "state": "no_simulator",
+                "idle_s": round(time.time() - session.last_active, 1),
+            }
+
         state = "idle"
         if session.task_loaded and session.needs_reset:
             state = "needs_reset"
@@ -98,6 +139,7 @@ class ServerMonitor:
 
         return {
             "session_id": sid[:12],
+            "simulator": session.simulator_name or "(unknown)",
             "task": current_task or "(none)",
             "steps": session.steps,
             "state": state,

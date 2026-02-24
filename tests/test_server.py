@@ -19,7 +19,7 @@ from simulator_inference_center.server import InferenceServer
 
 
 # ---------------------------------------------------------------------------
-# Mock backend
+# Mock backends
 # ---------------------------------------------------------------------------
 
 class MockBackend(SimulatorBackend):
@@ -85,8 +85,72 @@ class MockBackend(SimulatorBackend):
         self._task_loaded = None
 
 
-# Register the mock backend so the server can find it.
+class MockBackend2(SimulatorBackend):
+    """A second mock backend with different tasks for multi-backend testing."""
+
+    def __init__(self) -> None:
+        self._task_loaded: str = None
+        self._needs_reset = False
+        self._steps = 0
+        self.closed = False
+
+    def list_tasks(self) -> list:
+        return ["task_x", "task_y"]
+
+    def load_task(self, task_name: str) -> dict:
+        if task_name not in ("task_x", "task_y"):
+            raise ValueError("Unknown task: %s" % task_name)
+        self._task_loaded = task_name
+        self._needs_reset = True
+        return {
+            "task_name": task_name,
+            "description": "Mock2 %s" % task_name,
+            "action_space": {"shape": [6], "dtype": "float64"},
+            "max_episode_steps": 200,
+        }
+
+    def reset(self) -> dict:
+        if self._task_loaded is None:
+            raise RuntimeError("No task loaded")
+        self._needs_reset = False
+        self._steps = 0
+        return {
+            "state": encode_ndarray(np.zeros(6, dtype=np.float64)),
+        }
+
+    def step(self, action: dict) -> dict:
+        if self._task_loaded is None:
+            raise RuntimeError("No task loaded")
+        if self._needs_reset:
+            raise RuntimeError("Needs reset")
+        self._steps += 1
+        return {
+            "observation": {
+                "state": encode_ndarray(np.ones(6, dtype=np.float64) * self._steps),
+            },
+            "reward": 0.5,
+            "terminated": False,
+            "truncated": self._steps >= 200,
+            "info": {"step": self._steps},
+        }
+
+    def get_info(self) -> dict:
+        return {
+            "backend_name": "mock2",
+            "backend_version": "0.0.2",
+            "current_task": self._task_loaded,
+            "action_space": None,
+            "observation_space": None,
+        }
+
+    def close(self) -> None:
+        self.closed = True
+        self._task_loaded = None
+
+
+# Register the mock backends so the server can find them.
 register_backend("mock", MockBackend)
+register_backend("mock2", MockBackend2)
 
 
 # ---------------------------------------------------------------------------
@@ -95,10 +159,9 @@ register_backend("mock", MockBackend)
 
 @pytest.fixture()
 def server():
-    """Create an InferenceServer with the mock backend (no ZMQ, just dispatch)."""
+    """Create an InferenceServer (no ZMQ, just dispatch)."""
     config = ServerConfig(
         bind_address="tcp://*:0",
-        backend="mock",
         session_timeout_s=60.0,
         log_level="DEBUG",
     )
@@ -109,51 +172,157 @@ def server():
 FAKE_ID = b"\x00\x01\x02\x03"
 
 
+def _select_mock(server, identity=FAKE_ID):
+    """Helper: select the mock backend for a session."""
+    resp = server.handle_request(identity, {"method": "select_simulator", "simulator": "mock"})
+    assert resp["status"] == "ok"
+
+
 # ---------------------------------------------------------------------------
-# Tests -- direct handle_request dispatch (no ZMQ needed)
+# Tests -- simulator selection
+# ---------------------------------------------------------------------------
+
+class TestSimulatorSelection:
+    """Test list_simulators and select_simulator."""
+
+    def test_list_simulators(self, server):
+        resp = server.handle_request(FAKE_ID, {"method": "list_simulators"})
+        assert resp["status"] == "ok"
+        assert "mock" in resp["simulators"]
+        assert "mock2" in resp["simulators"]
+
+    def test_select_simulator_success(self, server):
+        resp = server.handle_request(FAKE_ID, {"method": "select_simulator", "simulator": "mock"})
+        assert resp["status"] == "ok"
+        assert resp["simulator"] == "mock"
+
+    def test_select_simulator_unknown(self, server):
+        resp = server.handle_request(FAKE_ID, {"method": "select_simulator", "simulator": "nonexistent"})
+        assert resp["status"] == "error"
+        assert resp["error_type"] == "unknown_simulator"
+
+    def test_select_simulator_missing_param(self, server):
+        resp = server.handle_request(FAKE_ID, {"method": "select_simulator"})
+        assert resp["status"] == "error"
+        assert resp["error_type"] == "invalid_params"
+
+    def test_select_simulator_already_selected(self, server):
+        server.handle_request(FAKE_ID, {"method": "select_simulator", "simulator": "mock"})
+        resp = server.handle_request(FAKE_ID, {"method": "select_simulator", "simulator": "mock2"})
+        assert resp["status"] == "error"
+        assert resp["error_type"] == "simulator_already_selected"
+
+    def test_disconnect_and_reselect(self, server):
+        server.handle_request(FAKE_ID, {"method": "select_simulator", "simulator": "mock"})
+        server.handle_request(FAKE_ID, {"method": "disconnect"})
+        # After disconnect, can select a different simulator
+        resp = server.handle_request(FAKE_ID, {"method": "select_simulator", "simulator": "mock2"})
+        assert resp["status"] == "ok"
+        assert resp["simulator"] == "mock2"
+
+    def test_different_clients_different_simulators(self, server):
+        client_a = b"\xaa"
+        client_b = b"\xbb"
+        server.handle_request(client_a, {"method": "select_simulator", "simulator": "mock"})
+        server.handle_request(client_b, {"method": "select_simulator", "simulator": "mock2"})
+        resp_a = server.handle_request(client_a, {"method": "list_tasks"})
+        assert resp_a["tasks"] == ["task_a", "task_b"]
+        resp_b = server.handle_request(client_b, {"method": "list_tasks"})
+        assert resp_b["tasks"] == ["task_x", "task_y"]
+
+
+# ---------------------------------------------------------------------------
+# Tests -- no_simulator_selected guard
+# ---------------------------------------------------------------------------
+
+class TestNoSimulatorSelectedGuard:
+    """Simulator methods return no_simulator_selected before select_simulator."""
+
+    def test_list_tasks_without_simulator(self, server):
+        resp = server.handle_request(FAKE_ID, {"method": "list_tasks"})
+        assert resp["status"] == "error"
+        assert resp["error_type"] == "no_simulator_selected"
+
+    def test_load_task_without_simulator(self, server):
+        resp = server.handle_request(FAKE_ID, {"method": "load_task", "task_name": "x"})
+        assert resp["status"] == "error"
+        assert resp["error_type"] == "no_simulator_selected"
+
+    def test_reset_without_simulator(self, server):
+        resp = server.handle_request(FAKE_ID, {"method": "reset"})
+        assert resp["status"] == "error"
+        assert resp["error_type"] == "no_simulator_selected"
+
+    def test_step_without_simulator(self, server):
+        resp = server.handle_request(FAKE_ID, {"method": "step", "action": {}})
+        assert resp["status"] == "error"
+        assert resp["error_type"] == "no_simulator_selected"
+
+    def test_get_info_without_simulator(self, server):
+        resp = server.handle_request(FAKE_ID, {"method": "get_info"})
+        assert resp["status"] == "error"
+        assert resp["error_type"] == "no_simulator_selected"
+
+
+# ---------------------------------------------------------------------------
+# Tests -- server dispatch (after select_simulator)
 # ---------------------------------------------------------------------------
 
 class TestServerDispatch:
-    """Test server message dispatch with the mock backend."""
+    """Test server message dispatch after selecting a simulator."""
 
     def test_list_tasks(self, server):
+        _select_mock(server)
         resp = server.handle_request(FAKE_ID, {"method": "list_tasks"})
         assert resp["status"] == "ok"
         assert resp["tasks"] == ["task_a", "task_b"]
 
     def test_load_task_success(self, server):
+        _select_mock(server)
         resp = server.handle_request(FAKE_ID, {"method": "load_task", "task_name": "task_a"})
         assert resp["status"] == "ok"
         assert resp["task_info"]["task_name"] == "task_a"
         assert resp["task_info"]["description"] == "Mock task_a"
 
     def test_load_task_not_found(self, server):
+        _select_mock(server)
         resp = server.handle_request(FAKE_ID, {"method": "load_task", "task_name": "no_such_task"})
         assert resp["status"] == "error"
         assert resp["error_type"] == "task_not_found"
 
     def test_load_task_missing_param(self, server):
+        _select_mock(server)
         resp = server.handle_request(FAKE_ID, {"method": "load_task"})
         assert resp["status"] == "error"
         assert resp["error_type"] == "invalid_params"
 
     def test_reset_without_load(self, server):
+        _select_mock(server)
         resp = server.handle_request(FAKE_ID, {"method": "reset"})
         assert resp["status"] == "error"
         assert resp["error_type"] == "no_task_loaded"
 
     def test_step_without_load(self, server):
+        _select_mock(server)
         resp = server.handle_request(FAKE_ID, {"method": "step", "action": {}})
         assert resp["status"] == "error"
         assert resp["error_type"] == "no_task_loaded"
 
     def test_step_without_reset(self, server):
+        _select_mock(server)
         server.handle_request(FAKE_ID, {"method": "load_task", "task_name": "task_a"})
         resp = server.handle_request(FAKE_ID, {"method": "step", "action": {}})
         assert resp["status"] == "error"
         assert resp["error_type"] == "not_reset"
 
     def test_full_lifecycle(self, server):
+        # list_simulators
+        resp = server.handle_request(FAKE_ID, {"method": "list_simulators"})
+        assert resp["status"] == "ok"
+
+        # select_simulator
+        _select_mock(server)
+
         # list_tasks
         resp = server.handle_request(FAKE_ID, {"method": "list_tasks"})
         assert resp["status"] == "ok"
@@ -181,6 +350,7 @@ class TestServerDispatch:
         assert resp["status"] == "ok"
 
     def test_step_missing_action(self, server):
+        _select_mock(server)
         server.handle_request(FAKE_ID, {"method": "load_task", "task_name": "task_a"})
         server.handle_request(FAKE_ID, {"method": "reset"})
         resp = server.handle_request(FAKE_ID, {"method": "step"})
@@ -198,11 +368,13 @@ class TestServerDispatch:
         assert resp["error_type"] == "invalid_params"
 
     def test_get_info(self, server):
+        _select_mock(server)
         resp = server.handle_request(FAKE_ID, {"method": "get_info"})
         assert resp["status"] == "ok"
         assert resp["backend_name"] == "mock"
 
     def test_observation_contains_ndarray_descriptor(self, server):
+        _select_mock(server)
         server.handle_request(FAKE_ID, {"method": "load_task", "task_name": "task_a"})
         resp = server.handle_request(FAKE_ID, {"method": "reset"})
         assert resp["status"] == "ok"
@@ -212,6 +384,7 @@ class TestServerDispatch:
         np.testing.assert_array_equal(arr, np.zeros(3, dtype=np.float64))
 
     def test_step_increments_observation(self, server):
+        _select_mock(server)
         server.handle_request(FAKE_ID, {"method": "load_task", "task_name": "task_b"})
         server.handle_request(FAKE_ID, {"method": "reset"})
 
@@ -227,26 +400,27 @@ class TestServerDispatch:
         np.testing.assert_array_equal(arr, np.ones(3, dtype=np.float64) * 2)
 
     def test_disconnect_cleans_session(self, server):
+        _select_mock(server)
         server.handle_request(FAKE_ID, {"method": "load_task", "task_name": "task_a"})
         server.handle_request(FAKE_ID, {"method": "disconnect"})
-        # After disconnect, the session should be gone.
-        # A new request creates a new session -- reset without load should fail.
+        # After disconnect, the session should be gone — no simulator selected.
         resp = server.handle_request(FAKE_ID, {"method": "reset"})
         assert resp["status"] == "error"
-        assert resp["error_type"] == "no_task_loaded"
+        assert resp["error_type"] == "no_simulator_selected"
 
     def test_multiple_clients_isolated(self, server):
         """Different client identities get separate sessions."""
         client_a = b"\xaa"
         client_b = b"\xbb"
 
+        _select_mock(server, client_a)
         server.handle_request(client_a, {"method": "load_task", "task_name": "task_a"})
         server.handle_request(client_a, {"method": "reset"})
 
-        # Client B has no task loaded.
+        # Client B has no simulator selected.
         resp = server.handle_request(client_b, {"method": "reset"})
         assert resp["status"] == "error"
-        assert resp["error_type"] == "no_task_loaded"
+        assert resp["error_type"] == "no_simulator_selected"
 
         # Client A can still step.
         resp = server.handle_request(client_a, {"method": "step", "action": {"action": [0.0] * 7}})
@@ -300,7 +474,6 @@ class TestZMQIntegration:
 
         config = ServerConfig(
             bind_address="tcp://*:%d" % port,
-            backend="mock",
             session_timeout_s=60.0,
             log_level="WARNING",
         )
@@ -315,6 +488,20 @@ class TestZMQIntegration:
         time.sleep(0.1)
 
         try:
+            # list_simulators
+            sock.send_multipart([b"", msgpack.packb({"method": "list_simulators"}, use_bin_type=True)])
+            assert sock.poll(3000, zmq.POLLIN)
+            resp = msgpack.unpackb(sock.recv_multipart()[-1], raw=False)
+            assert resp["status"] == "ok"
+            assert "mock" in resp["simulators"]
+
+            # select_simulator
+            sock.send_multipart([b"", msgpack.packb({"method": "select_simulator", "simulator": "mock"}, use_bin_type=True)])
+            assert sock.poll(3000, zmq.POLLIN)
+            resp = msgpack.unpackb(sock.recv_multipart()[-1], raw=False)
+            assert resp["status"] == "ok"
+            assert resp["simulator"] == "mock"
+
             # list_tasks
             sock.send_multipart([b"", msgpack.packb({"method": "list_tasks"}, use_bin_type=True)])
             assert sock.poll(3000, zmq.POLLIN)

@@ -139,10 +139,13 @@ class TestMonitorSetServerInfo:
 
     def test_set_server_info(self):
         monitor = ServerMonitor()
-        monitor.set_server_info(backend="libero", bind_address="tcp://*:5555")
+        monitor.set_server_info(
+            bind_address="tcp://*:5555",
+            available_backends=["libero", "robosuite"],
+        )
         snap = monitor.get_snapshot()
-        assert snap["backend_name"] == "libero"
         assert snap["bind_address"] == "tcp://*:5555"
+        assert snap["available_backends"] == ["libero", "robosuite"]
 
 
 class TestMonitorSessionLifecycle:
@@ -354,7 +357,6 @@ def _run_server_no_signals(server: InferenceServer) -> None:
 
     if server._monitor is not None:
         server._monitor.set_server_info(
-            backend=server.config.backend,
             bind_address=server.config.bind_address,
         )
 
@@ -394,7 +396,6 @@ class TestServerWithMonitor:
         monitor = ServerMonitor()
         config = ServerConfig(
             bind_address="tcp://*:%d" % port,
-            backend="mock_dashboard",
             session_timeout_s=60.0,
             log_level="WARNING",
         )
@@ -411,6 +412,12 @@ class TestServerWithMonitor:
         time.sleep(0.1)
 
         try:
+            # select_simulator
+            sock.send_multipart([b"", msgpack.packb({"method": "select_simulator", "simulator": "mock_dashboard"}, use_bin_type=True)])
+            assert sock.poll(3000, zmq.POLLIN)
+            resp = msgpack.unpackb(sock.recv_multipart()[-1], raw=False)
+            assert resp["status"] == "ok"
+
             # list_tasks
             sock.send_multipart([b"", msgpack.packb({"method": "list_tasks"}, use_bin_type=True)])
             assert sock.poll(3000, zmq.POLLIN)
@@ -437,9 +444,8 @@ class TestServerWithMonitor:
 
             # Check monitor state
             snap = monitor.get_snapshot()
-            assert snap["backend_name"] == "mock_dashboard"
             assert snap["bind_address"] == "tcp://*:%d" % port
-            assert snap["total_requests"] == 4  # list_tasks, load_task, reset, step
+            assert snap["total_requests"] == 5  # select_simulator, list_tasks, load_task, reset, step
             assert len(snap["sessions"]) == 1
 
             # Check session info
@@ -456,7 +462,7 @@ class TestServerWithMonitor:
 
             # Session should be removed
             snap = monitor.get_snapshot()
-            assert snap["total_requests"] == 5
+            assert snap["total_requests"] == 6
             assert len(snap["sessions"]) == 0
 
         finally:

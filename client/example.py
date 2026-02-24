@@ -30,6 +30,12 @@ def main() -> None:
         help="Server address (default: tcp://localhost:5555)",
     )
     parser.add_argument(
+        "--simulator",
+        type=str,
+        default=None,
+        help="Simulator backend to select (default: first available)",
+    )
+    parser.add_argument(
         "--steps",
         type=int,
         default=10,
@@ -39,6 +45,18 @@ def main() -> None:
 
     print(f"Connecting to server at {args.address} ...")
     with SimulatorClient(args.address) as client:
+        # Discover and select a simulator backend
+        simulators = client.list_simulators()
+        print(f"Available simulators: {simulators}")
+
+        if not simulators:
+            print("No simulators available. Exiting.")
+            sys.exit(0)
+
+        simulator = args.simulator or simulators[0]
+        print(f"Selecting simulator: {simulator}")
+        client.select_simulator(simulator)
+
         # List available tasks
         tasks = client.list_tasks()
         print(f"Available tasks ({len(tasks)}):")
@@ -50,7 +68,7 @@ def main() -> None:
             sys.exit(0)
 
         # Load the first task
-        task_name = tasks[0]
+        task_name = tasks[-1]
         print(f"\nLoading task: {task_name}")
         task_info = client.load_task(task_name)
         print(f"  Description: {task_info.get('description', 'N/A')}")

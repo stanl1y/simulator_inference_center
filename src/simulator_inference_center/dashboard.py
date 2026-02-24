@@ -1,4 +1,4 @@
-"""Gradio dashboard for real-time server monitoring."""
+"""Gradio dashboard for real-time server monitoring and task building."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from simulator_inference_center.monitor import ServerMonitor
+    from simulator_inference_center.task_store import TaskStore
 
 
 def _format_uptime(seconds: float) -> str:
@@ -20,50 +21,72 @@ def _format_uptime(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def create_dashboard(monitor: ServerMonitor) -> gr.Blocks:
-    """Build the Gradio Blocks dashboard."""
+def create_dashboard(
+    monitor: ServerMonitor,
+    task_store: TaskStore | None = None,
+) -> gr.Blocks:
+    """Build the Gradio Blocks dashboard.
+
+    When *task_store* is provided, a "Task Builder" tab is added alongside the
+    existing "Monitor" tab.
+    """
 
     with gr.Blocks(title="Simulator Inference Center", theme=gr.themes.Soft()) as app:
         gr.Markdown("# Simulator Inference Center — Dashboard")
 
-        # --- Server Status ---
-        with gr.Row():
-            backend_box = gr.Textbox(label="Backend", interactive=False)
-            address_box = gr.Textbox(label="Bind Address", interactive=False)
-            uptime_box = gr.Textbox(label="Uptime", interactive=False)
-            requests_box = gr.Number(label="Total Requests", interactive=False, precision=0)
-            sessions_box = gr.Number(label="Active Sessions", interactive=False, precision=0)
+        with gr.Tabs():
+            # ============================================================
+            # Monitor tab (existing functionality)
+            # ============================================================
+            with gr.Tab("Monitor"):
+                # --- Server Status ---
+                with gr.Row():
+                    backend_box = gr.Textbox(label="Backend", interactive=False)
+                    address_box = gr.Textbox(label="Bind Address", interactive=False)
+                    uptime_box = gr.Textbox(label="Uptime", interactive=False)
+                    requests_box = gr.Number(label="Total Requests", interactive=False, precision=0)
+                    sessions_box = gr.Number(label="Active Sessions", interactive=False, precision=0)
 
-        # --- Sessions Table ---
-        gr.Markdown("## Active Sessions")
-        sessions_table = gr.Dataframe(
-            headers=["Session ID", "Task", "Steps", "State", "Idle (s)"],
-            datatype=["str", "str", "number", "str", "number"],
-            interactive=False,
-        )
+                # --- Sessions Table ---
+                gr.Markdown("## Active Sessions")
+                sessions_table = gr.Dataframe(
+                    headers=["Session ID", "Task", "Steps", "State", "Idle (s)"],
+                    datatype=["str", "str", "number", "str", "number"],
+                    interactive=False,
+                )
 
-        # --- Simulation Images ---
-        gr.Markdown("## Simulation View")
-        no_sim_text = gr.Markdown("*No active simulation images*", visible=True)
-        with gr.Row():
-            # Pre-create up to 4 image slots for sessions
-            image_slots = []
-            for i in range(4):
-                with gr.Column(visible=False) as col:
-                    label = gr.Markdown(f"### Session {i + 1}")
-                    img = gr.Image(label="Agent View", type="numpy", interactive=False)
-                    image_slots.append((col, label, img))
+                # --- Simulation Images ---
+                gr.Markdown("## Simulation View")
+                no_sim_text = gr.Markdown("*No active simulation images*", visible=True)
+                with gr.Row():
+                    # Pre-create up to 4 image slots for sessions
+                    image_slots = []
+                    for i in range(4):
+                        with gr.Column(visible=False) as col:
+                            label = gr.Markdown(f"### Session {i + 1}")
+                            img = gr.Image(label="Agent View", type="numpy", interactive=False)
+                            image_slots.append((col, label, img))
 
-        # --- Server Logs ---
-        gr.Markdown("## Server Logs")
-        log_box = gr.Textbox(
-            label="Recent Logs",
-            lines=10,
-            max_lines=15,
-            interactive=False,
-        )
+                # --- Server Logs ---
+                gr.Markdown("## Server Logs")
+                log_box = gr.Textbox(
+                    label="Recent Logs",
+                    lines=10,
+                    max_lines=15,
+                    interactive=False,
+                )
 
-        # --- Refresh logic ---
+            # ============================================================
+            # Task Builder tab (only when task_store is provided)
+            # ============================================================
+            if task_store is not None:
+                with gr.Tab("Task Builder"):
+                    from simulator_inference_center.task_builder_ui import (
+                        create_task_builder_tab,
+                    )
+                    create_task_builder_tab(task_store, monitor)
+
+        # --- Refresh logic (bound to Monitor tab outputs) ---
         timer = gr.Timer(2)
 
         def refresh():
@@ -143,9 +166,10 @@ def launch_dashboard(
     monitor: ServerMonitor,
     port: int = 7860,
     share: bool = False,
+    task_store: TaskStore | None = None,
 ) -> threading.Thread:
     """Launch the Gradio dashboard in a background daemon thread."""
-    app = create_dashboard(monitor)
+    app = create_dashboard(monitor, task_store=task_store)
 
     def _run() -> None:
         app.launch(

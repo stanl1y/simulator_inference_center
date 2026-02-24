@@ -80,6 +80,21 @@ class SimulatorClient:
             raise RuntimeError(f"Server error [{error_type}]: {message}")
         return response
 
+    def list_simulators(self) -> list[str]:
+        """Return the list of available simulator backends."""
+        resp = self._send_request({"method": "list_simulators"})
+        self._check_response(resp)
+        return resp["simulators"]
+
+    def select_simulator(self, simulator: str) -> dict[str, Any]:
+        """Select which simulator backend to use for this session."""
+        resp = self._send_request({
+            "method": "select_simulator",
+            "simulator": simulator,
+        })
+        self._check_response(resp)
+        return resp
+
     def list_tasks(self) -> list[str]:
         """Return the list of available task names."""
         resp = self._send_request({"method": "list_tasks"})

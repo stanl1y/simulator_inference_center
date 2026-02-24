@@ -5,38 +5,54 @@ from __future__ import annotations
 import logging
 import signal
 import time
-import traceback
 from typing import TYPE_CHECKING, Any
 
 import zmq
 
 from simulator_inference_center.backend import SimulatorBackend
-from simulator_inference_center.backends import get_backend_class
+from simulator_inference_center.backends import get_backend_class, list_backends
 from simulator_inference_center.config import ServerConfig
 from simulator_inference_center.protocol import pack, unpack
 from simulator_inference_center.session import Session
 
 if TYPE_CHECKING:
     from simulator_inference_center.monitor import ServerMonitor
+    from simulator_inference_center.task_store import TaskStore
 
 logger = logging.getLogger(__name__)
 
 
 class InferenceServer:
-    """ZMQ ROUTER-based inference server for simulator backends."""
+    """ZMQ ROUTER-based inference server for simulator backends.
 
-    def __init__(self, config: ServerConfig, monitor: ServerMonitor | None = None) -> None:
+    Clients must call ``select_simulator`` to choose a backend before using
+    any simulator methods (list_tasks, load_task, reset, step, get_info).
+    """
+
+    def __init__(
+        self,
+        config: ServerConfig,
+        monitor: ServerMonitor | None = None,
+        task_store: TaskStore | None = None,
+    ) -> None:
         self.config = config
         self._running = False
         self._sessions: dict[bytes, Session] = {}
-        self._backend_cls = get_backend_class(config.backend)
         self._context: zmq.Context | None = None
         self._socket: zmq.Socket | None = None
         self._monitor = monitor
+        self._task_store = task_store
 
-    def _create_backend(self) -> SimulatorBackend:
-        """Instantiate a fresh backend for a new session."""
-        return self._backend_cls()
+    def _create_backend(self, backend_name: str) -> SimulatorBackend:
+        """Instantiate a fresh backend by name."""
+        cls = get_backend_class(backend_name)
+        if self._task_store is not None:
+            try:
+                return cls(task_store=self._task_store)
+            except TypeError:
+                # Backend doesn't accept task_store kwarg — fall back.
+                pass
+        return cls()
 
     def _make_error(
         self, error_type: str, message: str
@@ -50,10 +66,7 @@ class InferenceServer:
     def _get_or_create_session(self, identity: bytes) -> Session:
         if identity not in self._sessions:
             logger.info("New session for client %s", identity.hex())
-            backend = self._create_backend()
-            self._sessions[identity] = Session(
-                identity=identity, backend=backend
-            )
+            self._sessions[identity] = Session(identity=identity)
             if self._monitor is not None:
                 try:
                     self._monitor.on_session_created(identity, self._sessions[identity])
@@ -63,14 +76,24 @@ class InferenceServer:
         session.touch()
         return session
 
+    def _require_backend(self, session: Session, method: str) -> dict[str, Any] | None:
+        """Return an error response if the session has no backend, else None."""
+        if session.backend is None:
+            return self._make_error(
+                "no_simulator_selected",
+                f"Call select_simulator before {method}",
+            )
+        return None
+
     def _remove_session(self, identity: bytes) -> None:
         session = self._sessions.pop(identity, None)
         if session is not None:
             logger.info("Removing session for client %s", identity.hex())
-            try:
-                session.backend.close()
-            except Exception:
-                logger.exception("Error closing backend for %s", identity.hex())
+            if session.backend is not None:
+                try:
+                    session.backend.close()
+                except Exception:
+                    logger.exception("Error closing backend for %s", identity.hex())
         if self._monitor is not None:
             try:
                 self._monitor.on_session_removed(identity)
@@ -103,6 +126,8 @@ class InferenceServer:
             )
 
         handler = {
+            "list_simulators": self._handle_list_simulators,
+            "select_simulator": self._handle_select_simulator,
             "list_tasks": self._handle_list_tasks,
             "load_task": self._handle_load_task,
             "reset": self._handle_reset,
@@ -136,10 +161,73 @@ class InferenceServer:
 
         return response
 
+    # ------------------------------------------------------------------
+    # Handlers: list_simulators / select_simulator
+    # ------------------------------------------------------------------
+
+    def _handle_list_simulators(
+        self, identity: bytes, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {"status": "ok", "simulators": list_backends()}
+
+    def _handle_select_simulator(
+        self, identity: bytes, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        simulator = request.get("simulator")
+        if simulator is None:
+            return self._make_error(
+                "invalid_params", "Missing 'simulator' in select_simulator request"
+            )
+
+        session = self._get_or_create_session(identity)
+
+        if session.backend is not None:
+            return self._make_error(
+                "simulator_already_selected",
+                f"Simulator already selected: {session.simulator_name!r}. "
+                "Disconnect first to choose a different simulator.",
+            )
+
+        try:
+            backend = self._create_backend(simulator)
+        except KeyError:
+            available = ", ".join(list_backends()) or "(none)"
+            return self._make_error(
+                "unknown_simulator",
+                f"Unknown simulator {simulator!r}. Available: {available}",
+            )
+        except Exception as exc:
+            logger.exception("Failed to create backend %r", simulator)
+            return self._make_error(
+                "backend_error", f"Failed to create simulator: {exc}"
+            )
+
+        session.backend = backend
+        session.simulator_name = simulator
+        logger.info(
+            "Client %s selected simulator %r", identity.hex(), simulator
+        )
+
+        # Update monitor snapshot
+        if self._monitor is not None:
+            try:
+                self._monitor.on_session_created(identity, session)
+            except Exception:
+                logger.debug("Monitor update failed", exc_info=True)
+
+        return {"status": "ok", "simulator": simulator}
+
+    # ------------------------------------------------------------------
+    # Simulator handlers (require select_simulator first)
+    # ------------------------------------------------------------------
+
     def _handle_list_tasks(
         self, identity: bytes, request: dict[str, Any]
     ) -> dict[str, Any]:
         session = self._get_or_create_session(identity)
+        err = self._require_backend(session, "list_tasks")
+        if err is not None:
+            return err
         try:
             tasks = session.backend.list_tasks()
         except Exception as exc:
@@ -157,6 +245,9 @@ class InferenceServer:
             )
 
         session = self._get_or_create_session(identity)
+        err = self._require_backend(session, "load_task")
+        if err is not None:
+            return err
         try:
             task_info = session.backend.load_task(task_name)
         except ValueError as exc:
@@ -174,6 +265,9 @@ class InferenceServer:
         self, identity: bytes, request: dict[str, Any]
     ) -> dict[str, Any]:
         session = self._get_or_create_session(identity)
+        err = self._require_backend(session, "reset")
+        if err is not None:
+            return err
         if not session.task_loaded:
             return self._make_error(
                 "no_task_loaded", "Call load_task before reset"
@@ -193,6 +287,9 @@ class InferenceServer:
         self, identity: bytes, request: dict[str, Any]
     ) -> dict[str, Any]:
         session = self._get_or_create_session(identity)
+        err = self._require_backend(session, "step")
+        if err is not None:
+            return err
         if not session.task_loaded:
             return self._make_error(
                 "no_task_loaded", "Call load_task before step"
@@ -233,6 +330,9 @@ class InferenceServer:
         self, identity: bytes, request: dict[str, Any]
     ) -> dict[str, Any]:
         session = self._get_or_create_session(identity)
+        err = self._require_backend(session, "get_info")
+        if err is not None:
+            return err
         try:
             info = session.backend.get_info()
         except Exception as exc:
@@ -255,8 +355,8 @@ class InferenceServer:
 
         if self._monitor is not None:
             self._monitor.set_server_info(
-                backend=self.config.backend,
                 bind_address=self.config.bind_address,
+                available_backends=list_backends(),
             )
 
         # Handle SIGINT for graceful shutdown
@@ -273,9 +373,9 @@ class InferenceServer:
         poller.register(self._socket, zmq.POLLIN)
 
         logger.info(
-            "Server started on %s (backend=%s)",
+            "Server started on %s (available backends: %s)",
             self.config.bind_address,
-            self.config.backend,
+            ", ".join(list_backends()) or "(none)",
         )
 
         try:

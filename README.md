@@ -11,9 +11,11 @@ Simulator Inference Center decouples policy code from simulator code by running 
 - **ROUTER/DEALER transport** over TCP with msgpack + ndarray binary encoding
 - **Session isolation** — each client gets its own simulator backend instance
 - **Pluggable backends** — ships with LIBERO and robosuite; add new simulators by subclassing `SimulatorBackend`
+- **Dynamic backend selection** — clients choose their simulator at connect time via `select_simulator`
 - **Configurable** via environment variables (`SIM_` prefix) or constructor args
 - **Automatic session reaping** for idle clients
 - **Gradio dashboard** — optional web UI for real-time server status, session monitoring, and rendered simulation images
+- **Task Builder** — create custom LIBERO and robosuite tasks through the dashboard without writing code
 
 ## Installation
 
@@ -64,25 +66,29 @@ pip install gradio  # Optional: for the web dashboard
 ```bash
 conda activate sim_inference_center
 
-# Libero backend on default port
-python scripts/run_server.py --simulator libero --port 5555
+# Start server (clients select simulator dynamically via select_simulator)
+python scripts/run_server.py --port 5555
 
-# Robosuite backend
-python scripts/run_server.py --simulator robosuite --port 5555
+# With Gradio dashboard (includes Task Builder)
+python scripts/run_server.py --port 5555 --dashboard --dashboard-port 7860
 
-# With Gradio dashboard
-python scripts/run_server.py --simulator libero --port 5555 --dashboard --dashboard-port 7860
-
-# With environment variables
-SIM_BACKEND=libero SIM_BIND_ADDRESS=tcp://*:5555 python scripts/run_server.py
+# With custom task store directory
+python scripts/run_server.py --port 5555 --dashboard --task-store-dir ./my_tasks
 ```
 
-**Connect a client (Python):**
+**Connect a client:**
 
 ```python
 from client.client import SimulatorClient
 
 with SimulatorClient("tcp://localhost:5555") as client:
+    # Discover available backends
+    simulators = client.list_simulators()   # e.g. ["libero", "robosuite"]
+
+    # Select a backend for this session
+    client.select_simulator("libero")
+
+    # Now use the protocol as usual
     tasks = client.list_tasks()
     client.load_task(tasks[0])
     obs = client.reset()
@@ -108,18 +114,46 @@ python client/example_robosuite.py --task Lift --steps 50 --episodes 2
 
 All messages use msgpack over ZMQ with the frame format `[identity, empty delimiter, msgpack body]`.
 
-| Method       | Key Request Fields  | Key Response Fields                                |
-|--------------|---------------------|----------------------------------------------------|
-| list_tasks   | —                   | tasks: list[str]                                   |
-| load_task    | task_name: str      | task_info: dict                                    |
-| reset        | —                   | observation: dict                                  |
-| step         | action: dict        | observation, reward, terminated, truncated, info   |
-| get_info     | —                   | backend_name, backend_version, current_task, ...   |
-| disconnect   | —                   | (status only)                                      |
+| Method           | Key Request Fields  | Key Response Fields                                |
+|------------------|---------------------|----------------------------------------------------|
+| list_simulators  | ---                 | simulators: list[str]                              |
+| select_simulator | simulator: str      | simulator: str                                     |
+| list_tasks       | ---                 | tasks: list[str]                                   |
+| load_task        | task_name: str      | task_info: dict                                    |
+| reset            | ---                 | observation: dict                                  |
+| step             | action: dict        | observation, reward, terminated, truncated, info   |
+| get_info         | ---                 | backend_name, backend_version, current_task, ...   |
+| disconnect       | ---                 | (status only)                                      |
 
 Numpy arrays are encoded as `{"__type__": "ndarray", "shape": [...], "dtype": "...", "data": <bytes>}`.
 
-Errors return `{"status": "error", "error_type": "...", "message": "..."}` with types: `unknown_method`, `invalid_params`, `task_not_found`, `no_task_loaded`, `not_reset`, `backend_error`, `internal_error`.
+Errors return `{"status": "error", "error_type": "...", "message": "..."}` with types: `unknown_method`, `invalid_params`, `task_not_found`, `no_task_loaded`, `not_reset`, `backend_error`, `internal_error`, `no_simulator_selected`, `unknown_simulator`, `simulator_already_selected`.
+
+## Dynamic Backend Selection
+
+Each client must call `list_simulators` to discover registered backends, then `select_simulator` to choose one for its session. Calling any simulator method (e.g. `list_tasks`) before selecting a simulator returns a `no_simulator_selected` error.
+
+This allows a single server instance to expose multiple simulators (e.g. LIBERO and robosuite) and different clients can use different backends concurrently.
+
+**Client flow:**
+
+```
+list_simulators  ->  ["libero", "robosuite"]
+select_simulator("libero")  ->  ok
+list_tasks  ->  [...]
+load_task("...")  ->  ok
+reset  ->  observation
+step(action)  ->  observation, reward, ...
+disconnect
+```
+
+**Error types for backend selection:**
+
+| Error Type                  | Meaning                                                              |
+|-----------------------------|----------------------------------------------------------------------|
+| `no_simulator_selected`     | Client called a simulator method without first calling `select_simulator` |
+| `unknown_simulator`         | The simulator name passed to `select_simulator` is not registered     |
+| `simulator_already_selected`| Client tried to call `select_simulator` twice; disconnect first to switch |
 
 ## Configuration
 
@@ -128,9 +162,9 @@ All settings can be set via environment variables (prefix `SIM_`) or passed to `
 | Env Var                      | Default        | Description                     |
 |------------------------------|----------------|---------------------------------|
 | SIM_BIND_ADDRESS             | tcp://*:5555   | ZMQ ROUTER bind address         |
-| SIM_BACKEND                  | libero         | Backend name from registry      |
 | SIM_SESSION_TIMEOUT_S        | 300            | Idle session reap timeout (sec) |
 | SIM_LOG_LEVEL                | INFO           | Logging level                   |
+| SIM_TASK_STORE_DIR           | ~/.simulator_inference_center/custom_tasks | Custom task config directory |
 | SIM_LIBERO_TASK_SUITE        | libero_90      | Libero suite name               |
 | SIM_LIBERO_RENDER_WIDTH      | 256            | Render width                    |
 | SIM_LIBERO_RENDER_HEIGHT     | 256            | Render height                   |
@@ -149,7 +183,7 @@ All settings can be set via environment variables (prefix `SIM_`) or passed to `
 The server includes an optional Gradio web dashboard for real-time monitoring of server state and simulation images.
 
 ```bash
-python scripts/run_server.py --simulator libero --dashboard
+python scripts/run_server.py --dashboard
 # Dashboard at http://localhost:7860
 ```
 
@@ -157,12 +191,36 @@ python scripts/run_server.py --simulator libero --dashboard
 |--------------------|---------|---------------------------------|
 | `--dashboard`      | off     | Launch Gradio visualization dashboard |
 | `--dashboard-port` | 7860    | Port for the Gradio dashboard   |
+| `--task-store-dir` | ~/.simulator_inference_center/custom_tasks | Custom task config directory |
 
-**Dashboard panels:**
-- **Server Status** — backend name, bind address, uptime, total requests, active session count
-- **Active Sessions** — table with session ID, loaded task, step count, state, idle time
-- **Simulation View** — live rendered `agentview_image` for up to 4 concurrent sessions
-- **Server Logs** — recent log lines
+**Dashboard tabs:**
+
+### Monitor Tab
+- **Server Status** -- backend name, bind address, uptime, total requests, active session count
+- **Active Sessions** -- table with session ID, loaded task, step count, state, idle time
+- **Simulation View** -- live rendered `agentview_image` for up to 4 concurrent sessions
+- **Server Logs** -- recent log lines
+
+### Task Builder Tab
+
+Create custom tasks for both LIBERO and robosuite simulators without writing code:
+
+**LIBERO Task Builder:**
+- Configure task name, language description, workspace
+- Select fixtures and objects from dropdown menus
+- Define goal states using LIBERO predicates (On, In, Open, Close, TurnOn, TurnOff, Up)
+- Generates BDDL files via LIBERO's programmatic task generation pipeline
+- Tasks appear in `list_tasks()` and can be loaded by connected clients
+
+**Robosuite Task Builder:**
+- Configure task name, base environment, robot, controller
+- Set horizon, reward type (sparse/dense), and camera selection
+- Saves parameterized config that wraps `robosuite.make()` at runtime
+- Custom tasks appear in `list_tasks()` with a `custom:` prefix
+
+**Saved Tasks:**
+- View all persisted LIBERO and robosuite custom tasks
+- Delete individual tasks
 
 The dashboard runs in a background thread and auto-refreshes every 2 seconds. It does not affect server performance.
 
@@ -171,16 +229,19 @@ The dashboard runs in a background thread and auto-refreshes every 2 seconds. It
 ```
 src/simulator_inference_center/
     server.py               # InferenceServer: ZMQ ROUTER socket, poll loop, dispatch
-    session.py              # Session dataclass (per-client state)
+    session.py              # Session dataclass (per-client state, optional backend + simulator_name)
     backend.py              # SimulatorBackend ABC
     config.py               # ServerConfig + LiberoBackendConfig + RobosuiteBackendConfig
     protocol.py             # msgpack pack/unpack, ndarray encoding
-    monitor.py              # ServerMonitor: thread-safe state store for dashboard
-    dashboard.py            # Gradio Blocks UI for real-time server monitoring
+    monitor.py              # ServerMonitor: thread-safe state store + task-created callbacks
+    dashboard.py            # Gradio Blocks UI: Monitor tab + Task Builder tab
+    task_store.py           # Thread-safe JSON persistence for custom task configs
+    task_generator.py       # LIBERO BDDL generation, robosuite validation, UI constants
+    task_builder_ui.py      # Gradio UI components for the Task Builder tab
     backends/
         __init__.py         # Backend registry
-        libero.py           # LiberoBackend implementation
-        robosuite.py        # RobosuiteBackend implementation
+        libero.py           # LiberoBackend (supports custom tasks)
+        robosuite.py        # RobosuiteBackend (supports custom tasks)
 client/
     client.py               # SimulatorClient: ZMQ DEALER client with context manager
     example.py              # Full lifecycle example script
@@ -192,15 +253,17 @@ tests/
     test_libero_backend.py  # Libero integration tests (requires GPU)
     test_robosuite_backend.py # Robosuite integration tests
     test_dashboard.py       # Monitor + dashboard + integration tests
+    test_task_builder.py    # TaskStore, task generator, and Task Builder tests
 ```
 
 ## Adding a New Backend
 
 1. Create `src/simulator_inference_center/backends/my_backend.py`
 2. Subclass `SimulatorBackend` and implement all 6 methods (`list_tasks`, `load_task`, `reset`, `step`, `get_info`, `close`)
-3. Call `register_backend("my_backend", MyBackendClass)` at module level
-4. Add the import in `backends/__init__.py` via `_discover_backends()`
-5. Run with `--simulator my_backend`
+3. Optionally accept `task_store: TaskStore | None = None` in `__init__` for custom task support
+4. Call `register_backend("my_backend", MyBackendClass)` at module level
+5. Add the import in `backends/__init__.py` via `_discover_backends()`
+6. Clients can then select it via `select_simulator("my_backend")`
 
 ## Testing
 
@@ -216,6 +279,9 @@ pytest tests/test_robosuite_backend.py -v
 
 # Dashboard + monitor tests
 pytest tests/test_dashboard.py -v
+
+# Task builder tests (TaskStore, generators, dashboard integration)
+pytest tests/test_task_builder.py -v
 ```
 
 ## License

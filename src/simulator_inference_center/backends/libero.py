@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -18,6 +18,9 @@ from simulator_inference_center.backend import SimulatorBackend
 from simulator_inference_center.backends import register_backend
 from simulator_inference_center.config import LiberoBackendConfig
 from simulator_inference_center.protocol import encode_ndarray
+
+if TYPE_CHECKING:
+    from simulator_inference_center.task_store import TaskStore
 
 logger = logging.getLogger(__name__)
 
@@ -75,22 +78,40 @@ class _TaskEntry:
         self.task_obj = task_obj
 
 
+class _CustomTaskEntry:
+    """Bookkeeping for a custom (user-generated) task."""
+
+    __slots__ = ("bddl_path", "language")
+
+    def __init__(self, bddl_path: str, language: str):
+        self.bddl_path = bddl_path
+        self.language = language
+
+
 class LiberoBackend(SimulatorBackend):
     """Backend wrapping the LIBERO robotic manipulation benchmark.
 
     Loads tasks from all available Libero suites so that ``list_tasks()``
-    returns the full catalogue.
+    returns the full catalogue.  Also supports custom tasks loaded from a
+    :class:`TaskStore`.
     """
 
-    def __init__(self, config: LiberoBackendConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: LiberoBackendConfig | None = None,
+        task_store: TaskStore | None = None,
+    ) -> None:
         self._config = config or LiberoBackendConfig()
+        self._task_store = task_store
         self._tasks: dict[str, _TaskEntry] = {}
+        self._custom_tasks: dict[str, _CustomTaskEntry] = {}
         self._task_names: list[str] = []
         self._env = None
         self._current_task: str | None = None
         self._needs_reset: bool = False
         self._episode_steps: int = 0
         self._init_benchmarks()
+        self._load_custom_tasks()
 
     # ------------------------------------------------------------------
     # Internals
@@ -125,6 +146,28 @@ class LiberoBackend(SimulatorBackend):
 
         logger.info("Loaded %d Libero tasks across suites", len(self._task_names))
 
+    def _load_custom_tasks(self) -> None:
+        """Load custom tasks from the TaskStore at init."""
+        if self._task_store is None:
+            return
+        for config in self._task_store.list_libero_tasks():
+            if config.bddl_file_path and config.task_name not in self._tasks:
+                self.register_custom_task(
+                    config.task_name, config.bddl_file_path, config.language
+                )
+        if self._custom_tasks:
+            logger.info("Loaded %d custom Libero tasks", len(self._custom_tasks))
+
+    def register_custom_task(
+        self, name: str, bddl_path: str, language: str
+    ) -> None:
+        """Register a custom task for inclusion in list_tasks / load_task."""
+        if name in self._tasks or name in self._custom_tasks:
+            logger.warning("Task %r already exists, overwriting custom entry", name)
+        self._custom_tasks[name] = _CustomTaskEntry(bddl_path, language)
+        if name not in self._task_names:
+            self._task_names.append(name)
+
     def _close_env(self) -> None:
         """Close the current environment if one is open."""
         if self._env is not None:
@@ -142,7 +185,10 @@ class LiberoBackend(SimulatorBackend):
         return list(self._task_names)
 
     def load_task(self, task_name: str) -> dict[str, Any]:
-        if task_name not in self._tasks:
+        is_custom = task_name in self._custom_tasks
+        is_benchmark = task_name in self._tasks
+
+        if not is_custom and not is_benchmark:
             raise ValueError(
                 f"Unknown task {task_name!r}. "
                 f"Use list_tasks() to see available tasks."
@@ -151,8 +197,14 @@ class LiberoBackend(SimulatorBackend):
         # Close any existing env before loading a new one.
         self._close_env()
 
-        entry = self._tasks[task_name]
-        bddl_path = entry.benchmark.get_task_bddl_file_path(entry.index)
+        if is_custom:
+            custom_entry = self._custom_tasks[task_name]
+            bddl_path = custom_entry.bddl_path
+            description = custom_entry.language
+        else:
+            entry = self._tasks[task_name]
+            bddl_path = entry.benchmark.get_task_bddl_file_path(entry.index)
+            description = entry.task_obj.language
 
         from libero.libero.envs import OffScreenRenderEnv
 
@@ -164,6 +216,7 @@ class LiberoBackend(SimulatorBackend):
         self._env.seed(0)
 
         self._current_task = task_name
+        self._is_custom_task = is_custom
         self._needs_reset = True
         self._episode_steps = 0
 
@@ -173,7 +226,7 @@ class LiberoBackend(SimulatorBackend):
 
         task_info = {
             "task_name": task_name,
-            "description": entry.task_obj.language,
+            "description": description,
             "action_space": {
                 "shape": [action_dim],
                 "dtype": "float64",
@@ -183,7 +236,8 @@ class LiberoBackend(SimulatorBackend):
             "max_episode_steps": self._config.max_episode_steps,
         }
 
-        logger.info("Loaded task %r from suite %r", task_name, entry.suite_name)
+        source = "custom" if is_custom else self._tasks[task_name].suite_name
+        logger.info("Loaded task %r from %s", task_name, source)
         return task_info
 
     def reset(self) -> dict[str, Any]:
@@ -192,10 +246,11 @@ class LiberoBackend(SimulatorBackend):
 
         raw_obs = self._env.reset()
 
-        # Apply an initial state from the benchmark.
-        entry = self._tasks[self._current_task]
-        init_states = entry.benchmark.get_task_init_states(entry.index)
-        raw_obs = self._env.set_init_state(init_states[0])
+        # Apply an initial state from the benchmark (custom tasks skip this).
+        if not getattr(self, "_is_custom_task", False):
+            entry = self._tasks[self._current_task]
+            init_states = entry.benchmark.get_task_init_states(entry.index)
+            raw_obs = self._env.set_init_state(init_states[0])
 
         self._needs_reset = False
         self._episode_steps = 0
@@ -297,6 +352,7 @@ class LiberoBackend(SimulatorBackend):
     def close(self) -> None:
         self._close_env()
         self._current_task = None
+        self._is_custom_task = False
         self._needs_reset = False
         self._episode_steps = 0
         logger.info("LiberoBackend closed.")

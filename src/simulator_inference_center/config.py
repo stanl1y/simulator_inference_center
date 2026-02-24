@@ -15,15 +15,15 @@ class ServerConfig(BaseSettings):
         default="tcp://*:5555",
         description="ZMQ ROUTER bind address",
     )
-    backend: str = Field(
-        default="libero",
-        description="Which SimulatorBackend to use",
-    )
     session_timeout_s: float = Field(
         default=300.0,
         description="Seconds of inactivity before a session is reaped",
     )
     log_level: str = Field(default="INFO")
+    task_store_dir: str = Field(
+        default="~/.simulator_inference_center/custom_tasks",
+        description="Directory for persisted custom task configurations",
+    )
 
 
 class LiberoBackendConfig(BaseSettings):
