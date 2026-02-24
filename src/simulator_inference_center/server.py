@@ -6,7 +6,7 @@ import logging
 import signal
 import time
 import traceback
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import zmq
 
@@ -16,19 +16,23 @@ from simulator_inference_center.config import ServerConfig
 from simulator_inference_center.protocol import pack, unpack
 from simulator_inference_center.session import Session
 
+if TYPE_CHECKING:
+    from simulator_inference_center.monitor import ServerMonitor
+
 logger = logging.getLogger(__name__)
 
 
 class InferenceServer:
     """ZMQ ROUTER-based inference server for simulator backends."""
 
-    def __init__(self, config: ServerConfig) -> None:
+    def __init__(self, config: ServerConfig, monitor: ServerMonitor | None = None) -> None:
         self.config = config
         self._running = False
         self._sessions: dict[bytes, Session] = {}
         self._backend_cls = get_backend_class(config.backend)
         self._context: zmq.Context | None = None
         self._socket: zmq.Socket | None = None
+        self._monitor = monitor
 
     def _create_backend(self) -> SimulatorBackend:
         """Instantiate a fresh backend for a new session."""
@@ -50,6 +54,11 @@ class InferenceServer:
             self._sessions[identity] = Session(
                 identity=identity, backend=backend
             )
+            if self._monitor is not None:
+                try:
+                    self._monitor.on_session_created(identity, self._sessions[identity])
+                except Exception:
+                    logger.debug("Monitor update failed", exc_info=True)
         session = self._sessions[identity]
         session.touch()
         return session
@@ -62,6 +71,11 @@ class InferenceServer:
                 session.backend.close()
             except Exception:
                 logger.exception("Error closing backend for %s", identity.hex())
+        if self._monitor is not None:
+            try:
+                self._monitor.on_session_removed(identity)
+            except Exception:
+                logger.debug("Monitor update failed", exc_info=True)
 
     def _reap_stale_sessions(self) -> None:
         now = time.time()
@@ -103,14 +117,24 @@ class InferenceServer:
             )
 
         try:
-            return handler(identity, request)
+            response = handler(identity, request)
         except Exception:
             logger.exception(
                 "Unhandled error processing %s for %s", method, identity.hex()
             )
-            return self._make_error(
+            response = self._make_error(
                 "internal_error", "An internal server error occurred"
             )
+
+        # Notify monitor
+        if self._monitor is not None:
+            session = self._sessions.get(identity)
+            try:
+                self._monitor.on_request(identity, method, request, response, session)
+            except Exception:
+                logger.debug("Monitor update failed", exc_info=True)
+
+        return response
 
     def _handle_list_tasks(
         self, identity: bytes, request: dict[str, Any]
@@ -228,6 +252,12 @@ class InferenceServer:
         self._socket = self._context.socket(zmq.ROUTER)
         self._socket.bind(self.config.bind_address)
         self._running = True
+
+        if self._monitor is not None:
+            self._monitor.set_server_info(
+                backend=self.config.backend,
+                bind_address=self.config.bind_address,
+            )
 
         # Handle SIGINT for graceful shutdown
         original_sigint = signal.getsignal(signal.SIGINT)

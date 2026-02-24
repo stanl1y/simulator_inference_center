@@ -35,6 +35,18 @@ def main() -> None:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level",
     )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        default=False,
+        help="Launch Gradio visualization dashboard",
+    )
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=7860,
+        help="Port for the Gradio dashboard (default: 7860)",
+    )
     args = parser.parse_args()
 
     # Import after argparse so --help is fast
@@ -58,8 +70,15 @@ def main() -> None:
 
     logger = logging.getLogger("simulator_inference_center")
 
+    # Set up optional dashboard monitor
+    monitor = None
+    if args.dashboard:
+        from simulator_inference_center.monitor import ServerMonitor
+
+        monitor = ServerMonitor()
+
     try:
-        server = InferenceServer(config)
+        server = InferenceServer(config, monitor=monitor)
     except KeyError as exc:
         logger.error("Failed to initialize server: %s", exc)
         sys.exit(1)
@@ -67,6 +86,13 @@ def main() -> None:
     # If --task is given, verify it exists in the backend by listing tasks
     if args.task is not None:
         logger.info("Pre-load task requested: %s", args.task)
+
+    # Launch Gradio dashboard in background thread
+    if args.dashboard:
+        from simulator_inference_center.dashboard import launch_dashboard
+
+        launch_dashboard(monitor, port=args.dashboard_port)
+        logger.info("Dashboard available at http://localhost:%d", args.dashboard_port)
 
     server.run()
 

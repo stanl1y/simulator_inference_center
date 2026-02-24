@@ -13,6 +13,7 @@ Simulator Inference Center decouples policy code from simulator code by running 
 - **Pluggable backends** — ships with LIBERO and robosuite; add new simulators by subclassing `SimulatorBackend`
 - **Configurable** via environment variables (`SIM_` prefix) or constructor args
 - **Automatic session reaping** for idle clients
+- **Gradio dashboard** — optional web UI for real-time server status, session monitoring, and rendered simulation images
 
 ## Installation
 
@@ -53,6 +54,7 @@ conda create -n sim_inference_center python=3.8.13
 conda activate sim_inference_center
 cd /path/to/simulator_inference_center
 pip install -e .
+pip install gradio  # Optional: for the web dashboard
 ```
 
 ## Quick Start
@@ -67,6 +69,9 @@ python scripts/run_server.py --simulator libero --port 5555
 
 # Robosuite backend
 python scripts/run_server.py --simulator robosuite --port 5555
+
+# With Gradio dashboard
+python scripts/run_server.py --simulator libero --port 5555 --dashboard --dashboard-port 7860
 
 # With environment variables
 SIM_BACKEND=libero SIM_BIND_ADDRESS=tcp://*:5555 python scripts/run_server.py
@@ -139,6 +144,28 @@ All settings can be set via environment variables (prefix `SIM_`) or passed to `
 | SIM_ROBOSUITE_HORIZON        | 1000           | Max steps per episode           |
 | SIM_ROBOSUITE_REWARD_SHAPING | false          | Dense reward shaping            |
 
+## Gradio Dashboard
+
+The server includes an optional Gradio web dashboard for real-time monitoring of server state and simulation images.
+
+```bash
+python scripts/run_server.py --simulator libero --dashboard
+# Dashboard at http://localhost:7860
+```
+
+| CLI Flag           | Default | Description                     |
+|--------------------|---------|---------------------------------|
+| `--dashboard`      | off     | Launch Gradio visualization dashboard |
+| `--dashboard-port` | 7860    | Port for the Gradio dashboard   |
+
+**Dashboard panels:**
+- **Server Status** — backend name, bind address, uptime, total requests, active session count
+- **Active Sessions** — table with session ID, loaded task, step count, state, idle time
+- **Simulation View** — live rendered `agentview_image` for up to 4 concurrent sessions
+- **Server Logs** — recent log lines
+
+The dashboard runs in a background thread and auto-refreshes every 2 seconds. It does not affect server performance.
+
 ## Project Structure
 
 ```
@@ -148,6 +175,8 @@ src/simulator_inference_center/
     backend.py              # SimulatorBackend ABC
     config.py               # ServerConfig + LiberoBackendConfig + RobosuiteBackendConfig
     protocol.py             # msgpack pack/unpack, ndarray encoding
+    monitor.py              # ServerMonitor: thread-safe state store for dashboard
+    dashboard.py            # Gradio Blocks UI for real-time server monitoring
     backends/
         __init__.py         # Backend registry
         libero.py           # LiberoBackend implementation
@@ -162,6 +191,7 @@ tests/
     test_server.py          # Server dispatch + ZMQ integration tests (mock backend)
     test_libero_backend.py  # Libero integration tests (requires GPU)
     test_robosuite_backend.py # Robosuite integration tests
+    test_dashboard.py       # Monitor + dashboard + integration tests
 ```
 
 ## Adding a New Backend
@@ -183,6 +213,9 @@ pytest tests/test_libero_backend.py -v
 
 # Robosuite integration tests (requires robosuite install, auto-skipped otherwise)
 pytest tests/test_robosuite_backend.py -v
+
+# Dashboard + monitor tests
+pytest tests/test_dashboard.py -v
 ```
 
 ## License
