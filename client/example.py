@@ -2,7 +2,7 @@
 """Full lifecycle example: connect -> list_tasks -> load_task -> reset -> step loop -> disconnect.
 
 Usage:
-    python -m client.example [--address tcp://localhost:5555]
+    python -m simulator_inference_center.client.example [--address tcp://localhost:5555]
 """
 
 from __future__ import annotations
@@ -12,13 +12,7 @@ import sys
 
 import numpy as np
 
-import os
-import sys
-
-# Allow running as `python client/example.py` from the project root.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from client.client import SimulatorClient
+from simulator_inference_center.client import SimulatorClient
 
 
 def main() -> None:

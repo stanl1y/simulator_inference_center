@@ -10,8 +10,11 @@ ZMQ-based inference server that exposes robot simulators (e.g. LIBERO, robosuite
 
 ```bash
 conda activate sim_inference_center
+pip install -e .                     # Core install
+pip install -e ".[dashboard]"        # With Gradio dashboard
+pip install -e ".[all]"              # Everything (dashboard + dev)
 # Start server (clients select simulator dynamically via select_simulator)
-python scripts/run_server.py --port 5555
+sim-server --port 5555
 # Run tests (mock backend, no GPU needed)
 pytest tests/test_server.py -v
 # Run Libero integration tests (requires GPU + libero install)
@@ -19,13 +22,13 @@ pytest tests/test_libero_backend.py -v
 # Run robosuite integration tests (requires robosuite install)
 pytest tests/test_robosuite_backend.py -v
 # Start server with Gradio dashboard
-python scripts/run_server.py --port 5555 --dashboard --dashboard-port 7860
+sim-server --port 5555 --dashboard --dashboard-port 7860
 # Run dashboard tests
 pytest tests/test_dashboard.py -v
 # Run task builder tests
 pytest tests/test_task_builder.py -v
 # Start server with dashboard + custom task store directory
-python scripts/run_server.py --port 5555 --dashboard --task-store-dir ./my_tasks
+sim-server --port 5555 --dashboard --task-store-dir ./my_tasks
 ```
 
 ## Conda Environment
@@ -36,12 +39,14 @@ python scripts/run_server.py --port 5555 --dashboard --task-store-dir ./my_tasks
 - **Robosuite:** v1.4.0 installed in env
 - **Gradio:** 4.44.1 installed in env (for dashboard)
 - **Project install:** editable via `pip install -e .`
+- **Design principle:** simulators (LIBERO, robosuite) are installed in their own isolated envs, NOT in the inference center env. The inference center calls out to them.
 
 ## Project Structure
 
 ```
 src/simulator_inference_center/
     __init__.py             # Package init, __version__
+    cli.py                  # CLI entrypoint (sim-server command)
     server.py               # InferenceServer: ZMQ ROUTER socket, poll loop, message dispatch
     session.py              # Session dataclass (per-client state, optional backend + simulator_name)
     backend.py              # SimulatorBackend ABC (list_tasks, load_task, reset, step, get_info, close)
@@ -52,15 +57,18 @@ src/simulator_inference_center/
     task_store.py           # Thread-safe JSON persistence for custom task configs (LiberoTaskConfig, RobosuiteTaskConfig)
     task_generator.py       # LIBERO BDDL generation, robosuite config validation, UI dropdown constants
     task_builder_ui.py      # Gradio UI components for Task Builder tab (LIBERO builder, robosuite builder, saved tasks)
+    client/
+        __init__.py         # SimulatorClient re-export
+        client.py           # SimulatorClient: ZMQ DEALER client with context manager
     backends/
         __init__.py         # Backend registry: register_backend(), get_backend_class()
         libero.py           # LiberoBackend implementation (supports custom tasks via TaskStore)
         robosuite.py        # RobosuiteBackend implementation (supports custom tasks via TaskStore, "custom:" prefix)
 client/
-    client.py               # SimulatorClient: ZMQ DEALER client with context manager
     example.py              # Full lifecycle example script
+    example_robosuite.py    # Robosuite-specific example
 scripts/
-    run_server.py           # CLI entrypoint (--port, --log-level, --dashboard, --dashboard-port, --task-store-dir)
+    run_server.py           # Legacy CLI wrapper (delegates to cli.py)
 tests/
     test_server.py          # Server dispatch tests using MockBackend (no simulator needed)
     test_libero_backend.py  # Libero integration tests (skipped if libero not available)

@@ -15,8 +15,16 @@ dependencies = [
     "pydantic-settings>=2.0",
 ]
 
+[project.optional-dependencies]
+dashboard = ["gradio>=4.0"]
+dev = ["pytest>=7.0"]
+all = [
+    "simulator-inference-center[dashboard]",
+    "simulator-inference-center[dev]",
+]
+
 [project.scripts]
-sim-server = "simulator_inference_center.server:main"
+sim-server = "simulator_inference_center.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -2,7 +2,7 @@
 """Robosuite example: connect to a robosuite backend, run a short episode on the Lift task.
 
 Start the server first:
-    python scripts/run_server.py --simulator robosuite --port 5555
+    sim-server --port 5555
 
 Then run this example:
     python client/example_robosuite.py [--address tcp://localhost:5555] [--task Lift] [--steps 50]
@@ -12,14 +12,10 @@ from __future__ import annotations
 
 import argparse
 import sys
-import os
 
 import numpy as np
 
-# Allow running as `python client/example_robosuite.py` from the project root.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from client.client import SimulatorClient
+from simulator_inference_center.client import SimulatorClient
 
 
 def _print_observation_summary(obs: dict, label: str = "Observation") -> None:

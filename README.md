@@ -55,8 +55,27 @@ The server runs in its own conda environment, separate from the simulator enviro
 conda create -n sim_inference_center python=3.8.13
 conda activate sim_inference_center
 cd /path/to/simulator_inference_center
+
+# Core install (server + client)
 pip install -e .
-pip install gradio  # Optional: for the web dashboard
+
+# With Gradio dashboard
+pip install -e ".[dashboard]"
+
+# With all optional dependencies (dashboard + dev)
+pip install -e ".[all]"
+```
+
+**Client-only install** (on a remote machine that only needs to connect to the server):
+
+```bash
+pip install -e .
+```
+
+Then use:
+
+```python
+from simulator_inference_center.client import SimulatorClient
 ```
 
 ## Quick Start
@@ -67,19 +86,19 @@ pip install gradio  # Optional: for the web dashboard
 conda activate sim_inference_center
 
 # Start server (clients select simulator dynamically via select_simulator)
-python scripts/run_server.py --port 5555
+sim-server --port 5555
 
 # With Gradio dashboard (includes Task Builder)
-python scripts/run_server.py --port 5555 --dashboard --dashboard-port 7860
+sim-server --port 5555 --dashboard --dashboard-port 7860
 
 # With custom task store directory
-python scripts/run_server.py --port 5555 --dashboard --task-store-dir ./my_tasks
+sim-server --port 5555 --dashboard --task-store-dir ./my_tasks
 ```
 
 **Connect a client:**
 
 ```python
-from client.client import SimulatorClient
+from simulator_inference_center.client import SimulatorClient
 
 with SimulatorClient("tcp://localhost:5555") as client:
     # Discover available backends
@@ -104,7 +123,7 @@ with SimulatorClient("tcp://localhost:5555") as client:
 
 ```bash
 # Generic example (works with any backend)
-python -m client.example --address tcp://localhost:5555 --steps 50
+python client/example.py --address tcp://localhost:5555 --steps 50
 
 # Robosuite-specific example
 python client/example_robosuite.py --task Lift --steps 50 --episodes 2
@@ -183,7 +202,7 @@ All settings can be set via environment variables (prefix `SIM_`) or passed to `
 The server includes an optional Gradio web dashboard for real-time monitoring of server state and simulation images.
 
 ```bash
-python scripts/run_server.py --dashboard
+sim-server --dashboard
 # Dashboard at http://localhost:7860
 ```
 
@@ -228,6 +247,8 @@ The dashboard runs in a background thread and auto-refreshes every 2 seconds. It
 
 ```
 src/simulator_inference_center/
+    __init__.py             # Package init, __version__
+    cli.py                  # CLI entrypoint (sim-server command)
     server.py               # InferenceServer: ZMQ ROUTER socket, poll loop, dispatch
     session.py              # Session dataclass (per-client state, optional backend + simulator_name)
     backend.py              # SimulatorBackend ABC
@@ -238,16 +259,18 @@ src/simulator_inference_center/
     task_store.py           # Thread-safe JSON persistence for custom task configs
     task_generator.py       # LIBERO BDDL generation, robosuite validation, UI constants
     task_builder_ui.py      # Gradio UI components for the Task Builder tab
+    client/
+        __init__.py         # SimulatorClient re-export
+        client.py           # SimulatorClient: ZMQ DEALER client with context manager
     backends/
         __init__.py         # Backend registry
         libero.py           # LiberoBackend (supports custom tasks)
         robosuite.py        # RobosuiteBackend (supports custom tasks)
 client/
-    client.py               # SimulatorClient: ZMQ DEALER client with context manager
     example.py              # Full lifecycle example script
     example_robosuite.py    # Robosuite-specific example
 scripts/
-    run_server.py           # CLI entrypoint
+    run_server.py           # Legacy CLI wrapper (delegates to cli.py)
 tests/
     test_server.py          # Server dispatch + ZMQ integration tests (mock backend)
     test_libero_backend.py  # Libero integration tests (requires GPU)
