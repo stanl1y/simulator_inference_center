@@ -111,7 +111,9 @@ class RobosuiteBackend(SimulatorBackend):
     # SimulatorBackend interface
     # ------------------------------------------------------------------
 
-    def list_tasks(self) -> list[str]:
+    def list_tasks(self, suite: str | None = None) -> list[str]:
+        # Robosuite does not have suites; the parameter is accepted for
+        # interface compatibility but ignored.
         return list(robosuite.ALL_ENVIRONMENTS) + sorted(self._custom_tasks.keys())
 
     def load_task(self, task_name: str) -> dict[str, Any]:

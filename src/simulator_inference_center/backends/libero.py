@@ -50,6 +50,19 @@ _SUITES_TO_LOAD = [
     "libero_10",
 ]
 
+# LIBERO-PRO perturbation sub-suites (4 base suites x 4 perturbation types).
+# Each sub-suite contains perturbed BDDL files and init states for the same
+# task names as the base suite, enabling robustness evaluation of VLA models.
+_LIBERO_PRO_BASE_SUITES = ["libero_spatial", "libero_object", "libero_goal", "libero_10"]
+_LIBERO_PRO_PERTURBATIONS = ["lan", "object", "swap", "task"]
+_LIBERO_PRO_SUITES = [
+    f"{base}_{pert}"
+    for base in _LIBERO_PRO_BASE_SUITES
+    for pert in _LIBERO_PRO_PERTURBATIONS
+]
+
+_SUITES_TO_LOAD = _SUITES_TO_LOAD + _LIBERO_PRO_SUITES
+
 
 def _encode_observation(raw_obs: dict) -> dict[str, Any]:
     """Convert a raw Libero observation dict into the wire-protocol format.
@@ -123,6 +136,8 @@ class LiberoBackend(SimulatorBackend):
 
         bench_dict = libero_benchmark.get_benchmark_dict()
 
+        pro_suite_set = set(_LIBERO_PRO_SUITES)
+
         for suite_name in _SUITES_TO_LOAD:
             if suite_name not in bench_dict:
                 logger.warning("Suite %r not found, skipping", suite_name)
@@ -135,9 +150,17 @@ class LiberoBackend(SimulatorBackend):
                 )
                 continue
 
+            is_pro = suite_name in pro_suite_set
+
             for idx in range(bm.get_num_tasks()):
                 task_obj = bm.get_task(idx)
-                name = task_obj.name
+                # LIBERO-PRO sub-suites share the same raw task names as
+                # their base suites.  Prefix with the suite name so each
+                # perturbation variant gets a unique key in the task index.
+                if is_pro:
+                    name = f"{suite_name}/{task_obj.name}"
+                else:
+                    name = task_obj.name
                 if name in self._tasks:
                     # Duplicate across suites -- keep the first occurrence.
                     continue
@@ -181,8 +204,10 @@ class LiberoBackend(SimulatorBackend):
     # SimulatorBackend interface
     # ------------------------------------------------------------------
 
-    def list_tasks(self) -> list[str]:
-        return list(self._task_names)
+    def list_tasks(self, suite: str | None = None) -> list[str]:
+        if suite is None:
+            return list(self._task_names)
+        return [name for name, entry in self._tasks.items() if entry.suite_name == suite]
 
     def load_task(self, task_name: str) -> dict[str, Any]:
         is_custom = task_name in self._custom_tasks

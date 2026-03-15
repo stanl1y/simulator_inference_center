@@ -13,8 +13,12 @@ class SimulatorBackend(ABC):
     """
 
     @abstractmethod
-    def list_tasks(self) -> list[str]:
-        """Return the names of all available tasks."""
+    def list_tasks(self, suite: str | None = None) -> list[str]:
+        """Return the names of all available tasks.
+
+        If *suite* is given, only return tasks belonging to that suite.
+        Backends that do not support suites may ignore the parameter.
+        """
         ...
 
     @abstractmethod

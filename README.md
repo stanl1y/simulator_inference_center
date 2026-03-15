@@ -10,7 +10,7 @@ Simulator Inference Center decouples policy code from simulator code by running 
 
 - **ROUTER/DEALER transport** over TCP with msgpack + ndarray binary encoding
 - **Session isolation** — each client gets its own simulator backend instance
-- **Pluggable backends** — ships with LIBERO and robosuite; add new simulators by subclassing `SimulatorBackend`
+- **Pluggable backends** — ships with LIBERO (including LIBERO-PRO perturbation suites) and robosuite; add new simulators by subclassing `SimulatorBackend`
 - **Dynamic backend selection** — clients choose their simulator at connect time via `select_simulator`
 - **Configurable** via environment variables (`SIM_` prefix) or constructor args
 - **Automatic session reaping** for idle clients
@@ -273,7 +273,8 @@ scripts/
     run_server.py           # Legacy CLI wrapper (delegates to cli.py)
 tests/
     test_server.py          # Server dispatch + ZMQ integration tests (mock backend)
-    test_libero_backend.py  # Libero integration tests (requires GPU)
+    test_libero_backend.py  # Libero + LIBERO-PRO integration tests (requires GPU)
+    test_libero_pro_registration.py  # LIBERO-PRO benchmark registration tests
     test_robosuite_backend.py # Robosuite integration tests
     test_dashboard.py       # Monitor + dashboard + integration tests
     test_task_builder.py    # TaskStore, task generator, and Task Builder tests
@@ -288,6 +289,27 @@ tests/
 5. Add the import in `backends/__init__.py` via `_discover_backends()`
 6. Clients can then select it via `select_simulator("my_backend")`
 
+## LIBERO-PRO Perturbation Suites
+
+The backend automatically loads the 16 [LIBERO-PRO](https://github.com/Zxy-MLlab/LIBERO-PRO) perturbation sub-suites alongside the standard LIBERO suites. LIBERO-PRO applies four perturbation types to each of four base evaluation suites:
+
+| Base Suite       | Perturbation Types                     |
+|------------------|----------------------------------------|
+| libero_spatial   | lan, object, swap, task                |
+| libero_object    | lan, object, swap, task                |
+| libero_goal      | lan, object, swap, task                |
+| libero_10        | lan, object, swap, task                |
+
+Each sub-suite contains 10 tasks (160 total). Tasks are named with a `{suite_name}/{task_name}` prefix to distinguish them from the base suite versions, e.g. `libero_spatial_task/pick_up_the_black_bowl_on_the_stove_and_place_it_on_the_plate`.
+
+**Perturbation descriptions:**
+- **lan** (language) — paraphrased task instructions
+- **object** — modified object appearance, color, and scale
+- **swap** (position) — relocated objects within spatial bounds
+- **task** — redesigned task logic with new target states
+
+**Data source:** BDDL files and init states are from the [LIBERO-Pro HuggingFace dataset](https://huggingface.co/datasets/zhouxueyang/LIBERO-Pro).
+
 ## Testing
 
 ```bash
@@ -296,6 +318,9 @@ pytest tests/test_server.py -v
 
 # Libero integration tests (requires GPU + libero install, auto-skipped otherwise)
 pytest tests/test_libero_backend.py -v
+
+# LIBERO-PRO registration tests (requires libero install, auto-skipped otherwise)
+pytest tests/test_libero_pro_registration.py -v
 
 # Robosuite integration tests (requires robosuite install, auto-skipped otherwise)
 pytest tests/test_robosuite_backend.py -v

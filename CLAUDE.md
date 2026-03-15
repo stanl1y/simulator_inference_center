@@ -19,6 +19,8 @@ sim-server --port 5555
 pytest tests/test_server.py -v
 # Run Libero integration tests (requires GPU + libero install)
 pytest tests/test_libero_backend.py -v
+# Run LIBERO-PRO registration tests (requires libero install)
+pytest tests/test_libero_pro_registration.py -v
 # Run robosuite integration tests (requires robosuite install)
 pytest tests/test_robosuite_backend.py -v
 # Start server with Gradio dashboard
@@ -71,7 +73,8 @@ scripts/
     run_server.py           # Legacy CLI wrapper (delegates to cli.py)
 tests/
     test_server.py          # Server dispatch tests using MockBackend (no simulator needed)
-    test_libero_backend.py  # Libero integration tests (skipped if libero not available)
+    test_libero_backend.py  # Libero + LIBERO-PRO integration tests (skipped if libero not available)
+    test_libero_pro_registration.py  # LIBERO-PRO benchmark registration and task map tests
     test_robosuite_backend.py # Robosuite integration tests (skipped if robosuite not available)
     test_dashboard.py       # Monitor + dashboard + integration tests
     test_task_builder.py    # TaskStore CRUD, task generator validation, dashboard integration, monitor callbacks
@@ -179,6 +182,19 @@ The Task Builder allows users to create custom tasks for both LIBERO and robosui
 
 **Live registration:** When a task is created via the dashboard, `ServerMonitor.notify_task_created()` fires registered callbacks so backends can pick up new tasks without restart.
 
+## LIBERO-PRO Perturbation Suites
+
+The LiberoBackend automatically loads 16 LIBERO-PRO perturbation sub-suites in addition to the 5 standard suites. LIBERO-PRO applies four perturbation types (lan/language, object, swap/position, task) to four base suites (libero_spatial, libero_object, libero_goal, libero_10), yielding 160 additional tasks (16 sub-suites x 10 tasks each).
+
+**Naming convention:** LIBERO-PRO tasks are prefixed with `{suite_name}/` to avoid collisions with base suite tasks, e.g. `libero_spatial_task/pick_up_the_black_bowl_on_the_stove_and_place_it_on_the_plate`.
+
+**Data source:** BDDL files and init states are from [LIBERO-Pro HuggingFace dataset](https://huggingface.co/datasets/zhouxueyang/LIBERO-Pro), stored under `bddl_files/{suite_name}/` and `init_files/{suite_name}/` in the LIBERO install.
+
+**Key files:**
+- `libero/libero/benchmark/libero_suite_task_map.py` — task map entries for all 16 PRO sub-suites (generated from base suite task lists)
+- `libero/libero/benchmark/__init__.py` — 16 registered benchmark classes (e.g. `LIBERO_SPATIAL_TASK`, `LIBERO_10_LAN`)
+- `backends/libero.py` — `_LIBERO_PRO_SUITES` list, prefix-based task naming in `_init_benchmarks()`
+
 ## Adding a New Backend
 
 1. Create `src/simulator_inference_center/backends/my_backend.py`
@@ -191,7 +207,8 @@ The Task Builder allows users to create custom tasks for both LIBERO and robosui
 ## Testing
 
 - `test_server.py` uses a `MockBackend` registered as `"mock"` -- tests all dispatch paths, error cases, session cleanup, and dynamic backend selection. No GPU or simulator needed.
-- `test_libero_backend.py` uses the real `LiberoBackend` -- auto-skipped if libero is not installed. Requires GPU.
+- `test_libero_backend.py` uses the real `LiberoBackend` -- auto-skipped if libero is not installed. Requires GPU. Includes `TestLiberoProBackend` class for LIBERO-PRO perturbation suite integration tests.
+- `test_libero_pro_registration.py` tests LIBERO-PRO benchmark registration, task map population, and BDDL path correctness. Auto-skipped if libero is not installed.
 - `test_robosuite_backend.py` uses the real `RobosuiteBackend` -- auto-skipped if robosuite is not installed.
 - `test_dashboard.py` tests `ServerMonitor` (thread safety, image extraction, session lifecycle) and Gradio dashboard creation. Includes an integration test with a real ZMQ server + monitor on port 18766.
 - `test_task_builder.py` tests `TaskStore` CRUD (save, list, get, delete, overwrite, thread safety), `LiberoTaskGenerator` / `RobosuiteTaskGenerator` validation, `ServerMonitor` task-created callbacks, dashboard creation with/without `task_store`, and server `task_store` forwarding.

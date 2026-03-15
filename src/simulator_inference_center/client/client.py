@@ -95,9 +95,16 @@ class SimulatorClient:
         self._check_response(resp)
         return resp
 
-    def list_tasks(self) -> list[str]:
-        """Return the list of available task names."""
-        resp = self._send_request({"method": "list_tasks"})
+    def list_tasks(self, suite: str | None = None) -> list[str]:
+        """Return the list of available task names.
+
+        If *suite* is given, only return tasks belonging to that suite
+        (e.g. ``"libero_spatial"``).  Requires backend support.
+        """
+        body: dict[str, Any] = {"method": "list_tasks"}
+        if suite is not None:
+            body["suite"] = suite
+        resp = self._send_request(body)
         self._check_response(resp)
         return resp["tasks"]
 

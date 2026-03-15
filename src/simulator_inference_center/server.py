@@ -228,8 +228,9 @@ class InferenceServer:
         err = self._require_backend(session, "list_tasks")
         if err is not None:
             return err
+        suite = request.get("suite")
         try:
-            tasks = session.backend.list_tasks()
+            tasks = session.backend.list_tasks(suite=suite)
         except Exception as exc:
             logger.exception("backend.list_tasks() failed")
             return self._make_error("backend_error", str(exc))
