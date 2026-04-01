@@ -34,6 +34,15 @@ class LiberoBackendConfig(BaseSettings):
     max_episode_steps: int = Field(default=300)
 
 
+class LiberoPlusBackendConfig(LiberoBackendConfig):
+    model_config = {"env_prefix": "SIM_LIBERO_PLUS_"}
+
+    expose_camera_extrinsics: bool = Field(
+        default=True,
+        description="Include camera extrinsics (pos, quat) in observations",
+    )
+
+
 class RobosuiteBackendConfig(BaseSettings):
     model_config = {"env_prefix": "SIM_ROBOSUITE_"}
 

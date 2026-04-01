@@ -19,6 +19,8 @@ sim-server --port 5555
 pytest tests/test_server.py -v
 # Run Libero integration tests (requires GPU + libero install)
 pytest tests/test_libero_backend.py -v
+# Run LIBERO-Plus backend tests (requires GPU + libero install)
+pytest tests/test_libero_plus_backend.py -v
 # Run LIBERO-PRO registration tests (requires libero install)
 pytest tests/test_libero_pro_registration.py -v
 # Run robosuite integration tests (requires robosuite install)
@@ -52,7 +54,7 @@ src/simulator_inference_center/
     server.py               # InferenceServer: ZMQ ROUTER socket, poll loop, message dispatch
     session.py              # Session dataclass (per-client state, optional backend + simulator_name)
     backend.py              # SimulatorBackend ABC (list_tasks, load_task, reset, step, get_info, close)
-    config.py               # ServerConfig + LiberoBackendConfig + RobosuiteBackendConfig (pydantic-settings, SIM_ env prefix)
+    config.py               # ServerConfig + LiberoBackendConfig + LiberoPlusBackendConfig + RobosuiteBackendConfig (pydantic-settings, SIM_ env prefix)
     protocol.py             # msgpack pack/unpack, encode_ndarray/decode_ndarray
     monitor.py              # ServerMonitor: thread-safe state store for dashboard + task-created callbacks
     dashboard.py            # Gradio Blocks UI: Monitor tab + Task Builder tab (when task_store provided)
@@ -65,6 +67,7 @@ src/simulator_inference_center/
     backends/
         __init__.py         # Backend registry: register_backend(), get_backend_class()
         libero.py           # LiberoBackend implementation (supports custom tasks via TaskStore)
+        libero_plus.py      # LiberoPlusBackend: extends LiberoBackend with camera extrinsics + dynamic camera control
         robosuite.py        # RobosuiteBackend implementation (supports custom tasks via TaskStore, "custom:" prefix)
 client/
     example.py              # Full lifecycle example script
@@ -74,6 +77,7 @@ scripts/
 tests/
     test_server.py          # Server dispatch tests using MockBackend (no simulator needed)
     test_libero_backend.py  # Libero + LIBERO-PRO integration tests (skipped if libero not available)
+    test_libero_plus_backend.py # LIBERO-Plus backend tests: extrinsics, set_camera, get_observation (skipped if libero not available)
     test_libero_pro_registration.py  # LIBERO-PRO benchmark registration and task map tests
     test_robosuite_backend.py # Robosuite integration tests (skipped if robosuite not available)
     test_dashboard.py       # Monitor + dashboard + integration tests
@@ -96,16 +100,18 @@ docs/
 
 ## Protocol Methods
 
-| Method           | Key Request Fields  | Key Response Fields                                    |
-|------------------|---------------------|--------------------------------------------------------|
-| list_simulators  | (none)              | simulators: list[str]                                  |
-| select_simulator | simulator: str      | simulator: str                                         |
-| list_tasks       | (none)              | tasks: list[str]                                       |
-| load_task        | task_name: str      | task_info: dict                                        |
-| reset            | (none)              | observation: dict                                      |
-| step             | action: dict        | observation, reward, terminated, truncated, info       |
-| get_info         | (none)              | backend_name, backend_version, current_task, ...       |
-| disconnect       | (none)              | (status only)                                          |
+| Method           | Key Request Fields                          | Key Response Fields                                    |
+|------------------|---------------------------------------------|--------------------------------------------------------|
+| list_simulators  | (none)                                      | simulators: list[str]                                  |
+| select_simulator | simulator: str                              | simulator: str                                         |
+| list_tasks       | (none)                                      | tasks: list[str]                                       |
+| load_task        | task_name: str                              | task_info: dict                                        |
+| reset            | (none)                                      | observation: dict                                      |
+| step             | action: dict                                | observation, reward, terminated, truncated, info       |
+| get_info         | (none)                                      | backend_name, backend_version, current_task, ...       |
+| set_camera       | camera_name, position, quaternion           | observation: dict (re-rendered)                        |
+| get_observation  | (none)                                      | observation: dict (current frame)                      |
+| disconnect       | (none)                                      | (status only)                                          |
 
 ## Error Types
 
@@ -127,6 +133,7 @@ Via env vars (prefix `SIM_`) or ServerConfig constructor:
 | SIM_LIBERO_RENDER_WIDTH| 256              | Render width                    |
 | SIM_LIBERO_RENDER_HEIGHT| 256             | Render height                   |
 | SIM_LIBERO_MAX_EPISODE_STEPS | 300       | Max steps per episode           |
+| SIM_LIBERO_PLUS_EXPOSE_CAMERA_EXTRINSICS | true | Include camera extrinsics in observations |
 | SIM_ROBOSUITE_ROBOT    | Panda            | Robot name (Panda, Sawyer, etc) |
 | SIM_ROBOSUITE_CONTROLLER | (none)         | Controller type (OSC_POSE, etc) |
 | SIM_ROBOSUITE_RENDER_WIDTH | 256          | Camera image width              |
@@ -195,6 +202,25 @@ The LiberoBackend automatically loads 16 LIBERO-PRO perturbation sub-suites in a
 - `libero/libero/benchmark/__init__.py` — 16 registered benchmark classes (e.g. `LIBERO_SPATIAL_TASK`, `LIBERO_10_LAN`)
 - `backends/libero.py` — `_LIBERO_PRO_SUITES` list, prefix-based task naming in `_init_benchmarks()`
 
+## LIBERO-Plus Backend (Camera Extrinsics + Dynamic Camera Control)
+
+The `LiberoPlusBackend` extends `LiberoBackend` with two capabilities needed for viewpoint-robust VLA evaluation (Project Kobori):
+
+1. **Camera extrinsics in observations**: Every observation from `reset()` and `step()` includes a `camera_extrinsics` dict mapping camera names to their position (3,) and quaternion (4,) in the MuJoCo model. This enables computing relative camera poses for view synthesis.
+
+2. **Dynamic camera pose control**: `set_camera(camera_name, position, quaternion)` modifies a camera's pose at runtime and returns a re-rendered observation. `get_observation()` returns the current frame without stepping.
+
+**Protocol methods:** `set_camera` and `get_observation` are dispatched by the server when the backend supports them. Backends that do not implement these methods return `unknown_method` errors.
+
+**Config:** `LiberoPlusBackendConfig` inherits from `LiberoBackendConfig` with one additional field:
+- `expose_camera_extrinsics` (default: `true`) -- set to `false` to disable extrinsics in observations
+
+**Key files:**
+- `backends/libero_plus.py` -- `LiberoPlusBackend` class and `_get_camera_extrinsics()` helper
+- `config.py` -- `LiberoPlusBackendConfig` (env prefix: `SIM_LIBERO_PLUS_`)
+- `server.py` -- `_handle_set_camera()` and `_handle_get_observation()` handlers
+- `client/client.py` -- `set_camera()` and `get_observation()` client methods
+
 ## Adding a New Backend
 
 1. Create `src/simulator_inference_center/backends/my_backend.py`
@@ -208,6 +234,7 @@ The LiberoBackend automatically loads 16 LIBERO-PRO perturbation sub-suites in a
 
 - `test_server.py` uses a `MockBackend` registered as `"mock"` -- tests all dispatch paths, error cases, session cleanup, and dynamic backend selection. No GPU or simulator needed.
 - `test_libero_backend.py` uses the real `LiberoBackend` -- auto-skipped if libero is not installed. Requires GPU. Includes `TestLiberoProBackend` class for LIBERO-PRO perturbation suite integration tests.
+- `test_libero_plus_backend.py` uses the real `LiberoPlusBackend` -- auto-skipped if libero is not installed. Tests camera extrinsics in observations, `set_camera()`, `get_observation()`, and disabled-extrinsics mode.
 - `test_libero_pro_registration.py` tests LIBERO-PRO benchmark registration, task map population, and BDDL path correctness. Auto-skipped if libero is not installed.
 - `test_robosuite_backend.py` uses the real `RobosuiteBackend` -- auto-skipped if robosuite is not installed.
 - `test_dashboard.py` tests `ServerMonitor` (thread safety, image extraction, session lifecycle) and Gradio dashboard creation. Includes an integration test with a real ZMQ server + monitor on port 18766.

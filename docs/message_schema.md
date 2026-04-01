@@ -206,6 +206,72 @@ Gracefully end the session. The server releases backend resources.
 
 ---
 
+## Method: `set_camera`
+
+Set the pose of a named camera and return a freshly rendered observation.
+Only supported by backends that implement camera control (e.g. `libero_plus`).
+
+### Request
+
+```python
+{
+    "method": "set_camera",
+    "camera_name": str,     # MuJoCo camera name, default "agentview"
+    "position": [x, y, z],  # 3-element list or ndarray descriptor
+    "quaternion": [w, x, y, z]  # 4-element list or ndarray descriptor
+}
+```
+
+### Response
+
+```python
+{
+    "status": "ok",
+    "observation": <Observation>  # re-rendered with new camera pose
+}
+```
+
+The returned observation includes `camera_extrinsics` reflecting the updated
+camera pose.
+
+### Errors
+
+- `invalid_params` if `position` or `quaternion` is missing
+- `unknown_method` if the backend does not support `set_camera`
+- `backend_error` if the camera name is invalid
+
+---
+
+## Method: `get_observation`
+
+Re-render the current scene and return the observation without stepping the
+simulation. Only supported by backends that implement this method (e.g.
+`libero_plus`).
+
+### Request
+
+```python
+{
+    "method": "get_observation"
+}
+```
+
+### Response
+
+```python
+{
+    "status": "ok",
+    "observation": <Observation>  # current frame, same format as reset/step
+}
+```
+
+### Errors
+
+- `unknown_method` if the backend does not support `get_observation`
+- `backend_error` if no task is loaded
+
+---
+
 ## Data Encoding
 
 ### Observation Encoding
@@ -324,11 +390,13 @@ The server/backend should normalize both forms internally.
 
 ## Summary Table
 
-| Method       | Request Fields           | Key Response Fields                                      |
-|--------------|--------------------------|----------------------------------------------------------|
-| `list_tasks` | (none)                   | `tasks: list[str]`                                       |
-| `load_task`  | `task_name: str`         | `task_info: dict`                                        |
-| `reset`      | (none)                   | `observation: dict`                                      |
-| `step`       | `action: dict`           | `observation: dict`, `reward`, `terminated`, `truncated`, `info` |
-| `get_info`   | (none)                   | `backend_name`, `backend_version`, `current_task`, ...   |
-| `disconnect` | (none)                   | (status only)                                            |
+| Method            | Request Fields                              | Key Response Fields                                      |
+|-------------------|---------------------------------------------|----------------------------------------------------------|
+| `list_tasks`      | (none)                                      | `tasks: list[str]`                                       |
+| `load_task`       | `task_name: str`                            | `task_info: dict`                                        |
+| `reset`           | (none)                                      | `observation: dict`                                      |
+| `step`            | `action: dict`                              | `observation: dict`, `reward`, `terminated`, `truncated`, `info` |
+| `get_info`        | (none)                                      | `backend_name`, `backend_version`, `current_task`, ...   |
+| `set_camera`      | `camera_name`, `position`, `quaternion`     | `observation: dict` (re-rendered)                        |
+| `get_observation` | (none)                                      | `observation: dict` (current frame)                      |
+| `disconnect`      | (none)                                      | (status only)                                            |
