@@ -36,6 +36,10 @@ def _discover_backends() -> None:
     except ImportError:
         pass
     try:
+        from simulator_inference_center.backends import libero_plus  # noqa: F401
+    except ImportError:
+        pass
+    try:
         from simulator_inference_center.backends import robosuite  # noqa: F401
     except ImportError:
         pass

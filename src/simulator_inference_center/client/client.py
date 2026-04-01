@@ -142,6 +142,58 @@ class SimulatorClient:
             "info": resp.get("info", {}),
         }
 
+    def set_camera(
+        self,
+        camera_name: str = "agentview",
+        position: Any = None,
+        quaternion: Any = None,
+    ) -> dict[str, Any]:
+        """Set camera pose and return new observation.
+
+        Parameters
+        ----------
+        camera_name:
+            MuJoCo camera name (e.g. ``"agentview"``).
+        position:
+            Camera position as a 3-element list or numpy array.
+        quaternion:
+            Camera orientation as a 4-element list or numpy array.
+
+        Returns
+        -------
+        dict
+            Decoded observation dict with updated camera view.
+        """
+        body: dict[str, Any] = {
+            "method": "set_camera",
+            "camera_name": camera_name,
+        }
+        if position is not None:
+            if isinstance(position, np.ndarray):
+                body["position"] = _encode_ndarray(position)
+            else:
+                body["position"] = list(position)
+        if quaternion is not None:
+            if isinstance(quaternion, np.ndarray):
+                body["quaternion"] = _encode_ndarray(quaternion)
+            else:
+                body["quaternion"] = list(quaternion)
+        resp = self._send_request(body)
+        self._check_response(resp)
+        return _decode_observation(resp["observation"])
+
+    def get_observation(self) -> dict[str, Any]:
+        """Get current observation without stepping the simulation.
+
+        Returns
+        -------
+        dict
+            Decoded observation dict.
+        """
+        resp = self._send_request({"method": "get_observation"})
+        self._check_response(resp)
+        return _decode_observation(resp["observation"])
+
     def get_info(self) -> dict[str, Any]:
         """Get server/backend info."""
         resp = self._send_request({"method": "get_info"})

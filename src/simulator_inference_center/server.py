@@ -133,6 +133,8 @@ class InferenceServer:
             "reset": self._handle_reset,
             "step": self._handle_step,
             "get_info": self._handle_get_info,
+            "set_camera": self._handle_set_camera,
+            "get_observation": self._handle_get_observation,
             "disconnect": self._handle_disconnect,
         }.get(method)
 
@@ -340,6 +342,52 @@ class InferenceServer:
             logger.exception("backend.get_info() failed")
             return self._make_error("backend_error", str(exc))
         return {"status": "ok", **info}
+
+    def _handle_set_camera(
+        self, identity: bytes, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        session = self._get_or_create_session(identity)
+        err = self._require_backend(session, "set_camera")
+        if err is not None:
+            return err
+        if not hasattr(session.backend, "set_camera"):
+            return self._make_error(
+                "unknown_method", "Backend does not support set_camera"
+            )
+        camera_name = request.get("camera_name", "agentview")
+        position = request.get("position")
+        quaternion = request.get("quaternion")
+        if position is None or quaternion is None:
+            return self._make_error(
+                "invalid_params",
+                "set_camera requires 'position' and 'quaternion'",
+            )
+        try:
+            observation = session.backend.set_camera(
+                camera_name, position, quaternion
+            )
+        except Exception as exc:
+            logger.exception("backend.set_camera() failed")
+            return self._make_error("backend_error", str(exc))
+        return {"status": "ok", "observation": observation}
+
+    def _handle_get_observation(
+        self, identity: bytes, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        session = self._get_or_create_session(identity)
+        err = self._require_backend(session, "get_observation")
+        if err is not None:
+            return err
+        if not hasattr(session.backend, "get_observation"):
+            return self._make_error(
+                "unknown_method", "Backend does not support get_observation"
+            )
+        try:
+            observation = session.backend.get_observation()
+        except Exception as exc:
+            logger.exception("backend.get_observation() failed")
+            return self._make_error("backend_error", str(exc))
+        return {"status": "ok", "observation": observation}
 
     def _handle_disconnect(
         self, identity: bytes, request: dict[str, Any]
