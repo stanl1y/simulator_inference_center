@@ -154,9 +154,10 @@ class LiberoPlusBackend(LiberoBackend):
         if self._env is None:
             raise RuntimeError("No task loaded. Call load_task() first.")
 
-        # Use the environment's internal observation routine to get a
-        # complete observation dict (images + proprioception).
-        raw_obs = self._env._get_observations()
+        # Re-render: OffScreenRenderEnv wraps the robosuite env.
+        # Force observable update then grab observations from the inner env.
+        self._env._update_observables(force=True)
+        raw_obs = self._env.env._get_observations()
         obs = _encode_observation(raw_obs)
 
         if self._expose_extrinsics:
