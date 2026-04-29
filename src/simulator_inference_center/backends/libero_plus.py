@@ -37,11 +37,63 @@ def _get_camera_extrinsics(env, camera_names=_DEFAULT_CAMERAS) -> dict[str, Any]
             continue
         pos = np.array(env.sim.model.cam_pos[cam_id], dtype=np.float64).copy()
         quat = np.array(env.sim.model.cam_quat[cam_id], dtype=np.float64).copy()
+        fovy = float(env.sim.model.cam_fovy[cam_id])  # vertical FOV in degrees
         extrinsics[cam_name] = {
             "position": encode_ndarray(np.ascontiguousarray(pos)),
             "quaternion": encode_ndarray(np.ascontiguousarray(quat)),
+            "fovy_deg": fovy,
         }
     return extrinsics
+
+
+_BASE_BODY_CANDIDATES = (
+    "robot0_base", "robot0_link0", "base", "panda_link0", "panda_base",
+)
+
+# Link body names to expose poses for. Covers CtRNet-X's keypoint set
+# (base = link0, plus link6 and link7 for the 3+3 wrist/flange keypoints).
+_ROBOT_LINK_BODIES = (
+    "robot0_link0", "robot0_link1", "robot0_link2", "robot0_link3",
+    "robot0_link4", "robot0_link5", "robot0_link6", "robot0_link7",
+    "robot0_right_hand",
+)
+
+
+def _get_robot_base_pose(env) -> dict[str, Any] | None:
+    """Extract robot base body pose in world frame from MuJoCo. Tries several
+    common body names (robosuite prefixes with ``robot0_``).
+    """
+    for name in _BASE_BODY_CANDIDATES:
+        try:
+            pos = np.array(env.sim.data.get_body_xpos(name), dtype=np.float64).copy()
+            quat = np.array(env.sim.data.get_body_xquat(name), dtype=np.float64).copy()
+            return {
+                "body_name": name,
+                "position": encode_ndarray(np.ascontiguousarray(pos)),
+                "quaternion": encode_ndarray(np.ascontiguousarray(quat)),
+            }
+        except Exception:
+            continue
+    return None
+
+
+def _get_robot_link_poses(env) -> dict[str, Any]:
+    """Return a dict mapping link body name -> {position, quaternion} in world
+    frame, for all robot arm links present in the model. Bypasses URDF-based
+    FK by going to the authoritative MuJoCo state directly.
+    """
+    poses: dict[str, Any] = {}
+    for name in _ROBOT_LINK_BODIES:
+        try:
+            pos = np.array(env.sim.data.get_body_xpos(name), dtype=np.float64).copy()
+            quat = np.array(env.sim.data.get_body_xquat(name), dtype=np.float64).copy()
+            poses[name] = {
+                "position": encode_ndarray(np.ascontiguousarray(pos)),
+                "quaternion": encode_ndarray(np.ascontiguousarray(quat)),
+            }
+        except Exception:
+            continue
+    return poses
 
 
 class LiberoPlusBackend(LiberoBackend):
@@ -71,6 +123,12 @@ class LiberoPlusBackend(LiberoBackend):
         obs = super().reset()
         if self._expose_extrinsics and self._env is not None:
             obs["camera_extrinsics"] = _get_camera_extrinsics(self._env)
+            base_pose = _get_robot_base_pose(self._env)
+            if base_pose is not None:
+                obs["robot_base_pose"] = base_pose
+            link_poses = _get_robot_link_poses(self._env)
+            if link_poses:
+                obs["robot_link_poses"] = link_poses
         return obs
 
     def step(self, action: dict[str, Any]) -> dict[str, Any]:
@@ -79,6 +137,12 @@ class LiberoPlusBackend(LiberoBackend):
             result["observation"]["camera_extrinsics"] = _get_camera_extrinsics(
                 self._env
             )
+            base_pose = _get_robot_base_pose(self._env)
+            if base_pose is not None:
+                result["observation"]["robot_base_pose"] = base_pose
+            link_poses = _get_robot_link_poses(self._env)
+            if link_poses:
+                result["observation"]["robot_link_poses"] = link_poses
         return result
 
     def get_info(self) -> dict[str, Any]:
@@ -154,13 +218,20 @@ class LiberoPlusBackend(LiberoBackend):
         if self._env is None:
             raise RuntimeError("No task loaded. Call load_task() first.")
 
-        # Use the environment's internal observation routine to get a
-        # complete observation dict (images + proprioception).
-        raw_obs = self._env._get_observations()
+        # Re-render: OffScreenRenderEnv wraps the robosuite env.
+        # Force observable update then grab observations from the inner env.
+        self._env._update_observables(force=True)
+        raw_obs = self._env.env._get_observations()
         obs = _encode_observation(raw_obs)
 
         if self._expose_extrinsics:
             obs["camera_extrinsics"] = _get_camera_extrinsics(self._env)
+            base_pose = _get_robot_base_pose(self._env)
+            if base_pose is not None:
+                obs["robot_base_pose"] = base_pose
+            link_poses = _get_robot_link_poses(self._env)
+            if link_poses:
+                obs["robot_link_poses"] = link_poses
 
         return obs
 
