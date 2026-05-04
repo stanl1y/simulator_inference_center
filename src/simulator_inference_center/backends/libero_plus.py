@@ -17,8 +17,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Camera names to include extrinsics for by default.
-_DEFAULT_CAMERAS = ("agentview", "robot0_eye_in_hand")
+# Camera names to include extrinsics for by default. Cameras not in the
+# loaded MuJoCo model are silently skipped, so listing the full LIBERO
+# tabletop roster here costs nothing for tasks that only render a subset.
+_DEFAULT_CAMERAS = (
+    "agentview", "frontview", "sideview", "birdview", "robot0_eye_in_hand",
+)
 
 
 def _get_camera_extrinsics(env, camera_names=_DEFAULT_CAMERAS) -> dict[str, Any]:

@@ -32,6 +32,17 @@ class LiberoBackendConfig(BaseSettings):
     render_width: int = Field(default=256)
     render_height: int = Field(default=256)
     max_episode_steps: int = Field(default=300)
+    camera_names: str = Field(
+        default="agentview,robot0_eye_in_hand",
+        description=(
+            "Comma-separated camera names to render. Must match the cameras "
+            "defined in the LIBERO scene XML. The libero_tabletop_base_style "
+            "templates ship with agentview, frontview, sideview, birdview "
+            "plus robot0_eye_in_hand. Override via the SIM_LIBERO_CAMERA_NAMES "
+            "env var when extra views are needed (e.g. multi-view pose "
+            "validation)."
+        ),
+    )
 
 
 class LiberoPlusBackendConfig(LiberoBackendConfig):

@@ -67,8 +67,10 @@ _SUITES_TO_LOAD = _SUITES_TO_LOAD + _LIBERO_PRO_SUITES
 def _encode_observation(raw_obs: dict) -> dict[str, Any]:
     """Convert a raw Libero observation dict into the wire-protocol format.
 
-    Keys are remapped to canonical names and all values are encoded as ndarray
-    descriptors.
+    Mapped keys go through _OBS_KEY_MAP. Any extra ``<cam>_image`` keys
+    that aren't in the mapping (e.g. ``frontview_image``, ``sideview_image``
+    when the env was started with extra cameras) pass through under the
+    same name so multi-view clients can read them directly.
     """
     encoded: dict[str, Any] = {}
     for canonical, libero_key in _OBS_KEY_MAP.items():
@@ -76,6 +78,13 @@ def _encode_observation(raw_obs: dict) -> dict[str, Any]:
             encoded[canonical] = encode_ndarray(
                 np.ascontiguousarray(raw_obs[libero_key])
             )
+    mapped_image_keys = {libero_key for libero_key in _OBS_KEY_MAP.values()
+                        if libero_key.endswith("_image")}
+    for raw_key, raw_val in raw_obs.items():
+        if (raw_key.endswith("_image")
+                and raw_key not in mapped_image_keys
+                and raw_key not in encoded):
+            encoded[raw_key] = encode_ndarray(np.ascontiguousarray(raw_val))
     return encoded
 
 
@@ -233,10 +242,12 @@ class LiberoBackend(SimulatorBackend):
 
         from libero.libero.envs import OffScreenRenderEnv
 
+        cam_list = [c.strip() for c in self._config.camera_names.split(",") if c.strip()]
         self._env = OffScreenRenderEnv(
             bddl_file_name=bddl_path,
             camera_heights=self._config.render_height,
             camera_widths=self._config.render_width,
+            camera_names=cam_list,
         )
         self._env.seed(0)
 
