@@ -164,8 +164,10 @@ class LiberoPlusBackend(LiberoBackend):
         camera_name: str,
         position: Any,
         quaternion: Any,
+        fovy_deg: float | None = None,
     ) -> dict[str, Any]:
-        """Set camera pose and return a freshly rendered observation.
+        """Set camera pose (and optionally the field of view) and return a
+        freshly rendered observation.
 
         Parameters
         ----------
@@ -175,6 +177,13 @@ class LiberoPlusBackend(LiberoBackend):
             Camera position as a 3-element array, list, or ndarray descriptor.
         quaternion:
             Camera orientation as a 4-element array, list, or ndarray descriptor.
+        fovy_deg:
+            Optional vertical field of view in degrees. ``None`` (the default)
+            leaves the model's ``cam_fovy`` untouched, so every existing caller
+            behaves exactly as before. When given, it changes the camera
+            INTRINSICS (focal length), not just the pose -- the value is
+            readable back from the returned observation's
+            ``camera_extrinsics[camera_name]["fovy_deg"]``.
 
         Returns
         -------
@@ -204,8 +213,89 @@ class LiberoPlusBackend(LiberoBackend):
 
         self._env.sim.model.cam_pos[cam_id] = position.ravel()[:3]
         self._env.sim.model.cam_quat[cam_id] = quaternion.ravel()[:4]
+        if fovy_deg is not None:
+            fovy = float(fovy_deg)
+            if not 1.0 < fovy < 179.0:
+                raise ValueError(
+                    f"fovy_deg must be in (1, 179) degrees; got {fovy}"
+                )
+            self._env.sim.model.cam_fovy[cam_id] = fovy
         self._env.sim.forward()
 
+        return self.get_observation()
+
+    def set_lighting(
+        self,
+        light_name: str | None = None,
+        position: Any = None,
+        direction: Any = None,
+        diffuse: Any = None,
+        ambient: Any = None,
+        specular: Any = None,
+        active: Any = None,
+    ) -> dict[str, Any]:
+        """Set real MuJoCo light properties and return a freshly rendered obs.
+
+        This is the physical light path (equivalent to robosuite's
+        LightingModder): it edits the MuJoCo model's ``light_*`` arrays so the
+        renderer re-shades AND re-casts shadows. Purely additive -- any field
+        left ``None`` is untouched.
+
+        Parameters
+        ----------
+        light_name:
+            MuJoCo light name (e.g. ``"light1"``). If ``None`` the change is
+            applied to ALL lights in the scene.
+        position / direction:
+            3-vectors (world frame) for the light origin / aim direction.
+        diffuse / ambient / specular:
+            3-vectors (RGB in [0, 1]) for the respective light components.
+        active:
+            0/1 (or bool) to disable/enable the light.
+
+        Returns
+        -------
+        dict
+            Encoded observation dict (same format as ``reset()``).
+        """
+        if self._env is None:
+            raise RuntimeError("No task loaded. Call load_task() first.")
+
+        model = self._env.sim.model
+
+        def _vec(v):
+            if isinstance(v, dict) and v.get("__type__") == "ndarray":
+                return decode_ndarray(v)
+            return np.asarray(v, dtype=np.float64)
+
+        if light_name is None:
+            light_ids = list(range(int(model.nlight)))
+        else:
+            try:
+                light_ids = [model.light_name2id(light_name)]
+            except Exception:
+                raise ValueError(
+                    f"Light {light_name!r} not found in the MuJoCo model "
+                    f"(have {int(model.nlight)} lights)."
+                )
+
+        for lid in light_ids:
+            if position is not None:
+                model.light_pos[lid] = _vec(position).ravel()[:3]
+            if direction is not None:
+                d = _vec(direction).ravel()[:3]
+                n = np.linalg.norm(d)
+                model.light_dir[lid] = d / n if n > 1e-9 else d
+            if diffuse is not None:
+                model.light_diffuse[lid] = _vec(diffuse).ravel()[:3]
+            if ambient is not None:
+                model.light_ambient[lid] = _vec(ambient).ravel()[:3]
+            if specular is not None:
+                model.light_specular[lid] = _vec(specular).ravel()[:3]
+            if active is not None:
+                model.light_active[lid] = int(np.asarray(active).ravel()[0])
+
+        self._env.sim.forward()
         return self.get_observation()
 
     def get_observation(self) -> dict[str, Any]:

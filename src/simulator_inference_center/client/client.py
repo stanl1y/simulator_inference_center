@@ -147,8 +147,10 @@ class SimulatorClient:
         camera_name: str = "agentview",
         position: Any = None,
         quaternion: Any = None,
+        fovy_deg: float | None = None,
     ) -> dict[str, Any]:
-        """Set camera pose and return new observation.
+        """Set camera pose (and optionally field of view) and return new
+        observation.
 
         Parameters
         ----------
@@ -158,6 +160,11 @@ class SimulatorClient:
             Camera position as a 3-element list or numpy array.
         quaternion:
             Camera orientation as a 4-element list or numpy array.
+        fovy_deg:
+            Optional vertical field of view in degrees. ``None`` (default)
+            leaves the camera's intrinsics untouched. Read the APPLIED value
+            back from the returned observation's
+            ``camera_extrinsics[camera_name]["fovy_deg"]``.
 
         Returns
         -------
@@ -178,6 +185,57 @@ class SimulatorClient:
                 body["quaternion"] = _encode_ndarray(quaternion)
             else:
                 body["quaternion"] = list(quaternion)
+        if fovy_deg is not None:
+            body["fovy_deg"] = float(fovy_deg)
+        resp = self._send_request(body)
+        self._check_response(resp)
+        return _decode_observation(resp["observation"])
+
+    def set_lighting(
+        self,
+        light_name: str | None = None,
+        position: Any = None,
+        direction: Any = None,
+        diffuse: Any = None,
+        ambient: Any = None,
+        specular: Any = None,
+        active: Any = None,
+    ) -> dict[str, Any]:
+        """Set real MuJoCo light properties and return new observation.
+
+        Edits the scene's physical ``light_*`` arrays so the render re-shades
+        and re-casts shadows (the LightingModder path). Any field left ``None``
+        is untouched. ``light_name=None`` applies to all lights.
+
+        Parameters
+        ----------
+        light_name:
+            MuJoCo light name (e.g. ``"light1"``), or ``None`` for all lights.
+        position / direction:
+            3-vectors (world frame).
+        diffuse / ambient / specular:
+            3-vectors (RGB in [0, 1]).
+        active:
+            0/1 to disable/enable the light.
+
+        Returns
+        -------
+        dict
+            Decoded observation dict with the relit scene.
+        """
+        body: dict[str, Any] = {"method": "set_lighting"}
+        if light_name is not None:
+            body["light_name"] = light_name
+        for key, val in (
+            ("position", position), ("direction", direction),
+            ("diffuse", diffuse), ("ambient", ambient),
+            ("specular", specular),
+        ):
+            if val is not None:
+                body[key] = (_encode_ndarray(val) if isinstance(val, np.ndarray)
+                             else list(val))
+        if active is not None:
+            body["active"] = int(active)
         resp = self._send_request(body)
         self._check_response(resp)
         return _decode_observation(resp["observation"])

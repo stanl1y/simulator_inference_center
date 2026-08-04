@@ -134,6 +134,7 @@ class InferenceServer:
             "step": self._handle_step,
             "get_info": self._handle_get_info,
             "set_camera": self._handle_set_camera,
+            "set_lighting": self._handle_set_lighting,
             "get_observation": self._handle_get_observation,
             "disconnect": self._handle_disconnect,
         }.get(method)
@@ -362,12 +363,50 @@ class InferenceServer:
                 "invalid_params",
                 "set_camera requires 'position' and 'quaternion'",
             )
+        # fovy_deg is optional and only forwarded when present, so backends that
+        # do not accept it keep working unchanged.
+        extra: dict[str, Any] = {}
+        if request.get("fovy_deg") is not None:
+            extra["fovy_deg"] = request["fovy_deg"]
         try:
             observation = session.backend.set_camera(
-                camera_name, position, quaternion
+                camera_name, position, quaternion, **extra
             )
+        except TypeError as exc:
+            if extra:
+                logger.exception("backend.set_camera() rejected fovy_deg")
+                return self._make_error(
+                    "invalid_params",
+                    f"Backend does not support fovy_deg: {exc}",
+                )
+            logger.exception("backend.set_camera() failed")
+            return self._make_error("backend_error", str(exc))
         except Exception as exc:
             logger.exception("backend.set_camera() failed")
+            return self._make_error("backend_error", str(exc))
+        return {"status": "ok", "observation": observation}
+
+    def _handle_set_lighting(
+        self, identity: bytes, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        session = self._get_or_create_session(identity)
+        err = self._require_backend(session, "set_lighting")
+        if err is not None:
+            return err
+        if not hasattr(session.backend, "set_lighting"):
+            return self._make_error(
+                "unknown_method", "Backend does not support set_lighting"
+            )
+        kwargs = {
+            k: request.get(k)
+            for k in ("light_name", "position", "direction", "diffuse",
+                      "ambient", "specular", "active")
+            if request.get(k) is not None
+        }
+        try:
+            observation = session.backend.set_lighting(**kwargs)
+        except Exception as exc:
+            logger.exception("backend.set_lighting() failed")
             return self._make_error("backend_error", str(exc))
         return {"status": "ok", "observation": observation}
 
