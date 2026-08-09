@@ -16,8 +16,18 @@ class ServerConfig(BaseSettings):
         description="ZMQ ROUTER bind address",
     )
     session_timeout_s: float = Field(
-        default=300.0,
-        description="Seconds of inactivity before a session is reaped",
+        default=1800.0,
+        description=(
+            "Seconds of inactivity before a session is reaped. The old 300s "
+            "default assumed the client calls back quickly, but an experiment "
+            "client can legitimately go quiet for minutes at a time while it "
+            "lazily loads its own models (SAM3 / DepthPro / LaMa / a VLA) or "
+            "synthesises a large warp between sim calls. On a slower node that "
+            "first-episode gap exceeded 300s, the session was reaped, and the "
+            "next set_camera failed with 'Call select_simulator before "
+            "set_camera' 28 minutes into a 4-hour run. Override with "
+            "SIM_SESSION_TIMEOUT_S."
+        ),
     )
     log_level: str = Field(default="INFO")
     task_store_dir: str = Field(
