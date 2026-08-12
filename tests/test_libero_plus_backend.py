@@ -162,6 +162,50 @@ class TestLiberoPlusSetCamera:
         be.close()
 
 
+class TestLiberoPlusGetDepth:
+    """Ground-truth metric depth: alignment with the RGB, and real metres."""
+
+    def test_depth_is_aligned_with_the_observation_image(self, loaded_backend):
+        """The RGB from the depth render must be byte-identical to the
+        observation image — that is what proves the depth is not flipped."""
+        from simulator_inference_center.protocol import decode_ndarray
+
+        obs = loaded_backend.get_observation()
+        payload = loaded_backend.get_depth("agentview", with_rgb=True)
+        rgb = decode_ndarray(payload["rgb"])
+        img = decode_ndarray(obs["agentview_image"])
+        assert rgb.shape == img.shape
+        assert np.array_equal(rgb, img), (
+            "depth-render RGB differs from the observation image -> the depth "
+            "map is NOT in the same orientation as the RGB"
+        )
+
+    def test_depth_is_metric_not_normalised(self, loaded_backend):
+        """A normalised [0,1] buffer would fail this: a LIBERO tabletop scene
+        sits ~0.5-3 m from agentview, and the depth must be float32 metres."""
+        from simulator_inference_center.protocol import decode_ndarray
+
+        payload = loaded_backend.get_depth("agentview")
+        depth = decode_ndarray(payload["depth"])
+        assert payload["units"] == "m"
+        assert depth.dtype == np.float32
+        assert depth.shape == (payload["height"], payload["width"])
+        finite = depth[np.isfinite(depth)]
+        assert finite.min() > 0.05, "depth must be positive metres"
+        median = float(np.median(finite))
+        assert 0.3 < median < 5.0, (
+            f"median depth {median:.3f} is not a plausible tabletop distance "
+            f"in metres (a normalised [0,1] buffer would land near ~0.99)"
+        )
+
+    def test_get_depth_without_task_raises(self):
+        config = LiberoPlusBackendConfig()
+        be = LiberoPlusBackend(config)
+        with pytest.raises(RuntimeError, match="No task loaded"):
+            be.get_depth("agentview")
+        be.close()
+
+
 class TestLiberoPlusExtrinsicsDisabled:
     """Test behavior when expose_camera_extrinsics is disabled."""
 

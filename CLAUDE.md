@@ -111,6 +111,7 @@ docs/
 | get_info         | (none)                                      | backend_name, backend_version, current_task, ...       |
 | set_camera       | camera_name, position, quaternion           | observation: dict (re-rendered)                        |
 | get_observation  | (none)                                      | observation: dict (current frame)                      |
+| get_depth        | camera_name, with_rgb                       | depth (H,W) float32 metres, near, far, units, [rgb]    |
 | disconnect       | (none)                                      | (status only)                                          |
 
 ## Error Types
@@ -210,7 +211,9 @@ The `LiberoPlusBackend` extends `LiberoBackend` with two capabilities needed for
 
 2. **Dynamic camera pose control**: `set_camera(camera_name, position, quaternion)` modifies a camera's pose at runtime and returns a re-rendered observation. `get_observation()` returns the current frame without stepping.
 
-**Protocol methods:** `set_camera` and `get_observation` are dispatched by the server when the backend supports them. Backends that do not implement these methods return `unknown_method` errors.
+3. **Ground-truth metric depth**: `get_depth(camera_name, with_rgb=False)` re-renders the current scene and returns the MuJoCo depth buffer converted to METRES (`near / (1 - z_norm * (1 - near/far))`, the dm_control / `robosuite.utils.camera_utils.get_real_depth_map` formula — the raw buffer is normalised to [0,1] and nonlinear, so returning it unconverted would be silently wrong). The depth is oriented exactly like `<camera_name>_image` (same `robosuite.macros.IMAGE_CONVENTION` slice, same `sim.render()` call; LIBERO default = row 0 is the image bottom). `with_rgb=True` also returns the RGB from that render so a client can assert byte-equality with the observation image and PROVE the alignment — a mis-flipped depth map produces a plausible-looking but geometrically wrong warp and raises no error anywhere.
+
+**Protocol methods:** `set_camera`, `get_observation` and `get_depth` are dispatched by the server when the backend supports them. Backends that do not implement these methods return `unknown_method` errors.
 
 **Config:** `LiberoPlusBackendConfig` inherits from `LiberoBackendConfig` with one additional field:
 - `expose_camera_extrinsics` (default: `true`) -- set to `false` to disable extrinsics in observations
@@ -218,8 +221,8 @@ The `LiberoPlusBackend` extends `LiberoBackend` with two capabilities needed for
 **Key files:**
 - `backends/libero_plus.py` -- `LiberoPlusBackend` class and `_get_camera_extrinsics()` helper
 - `config.py` -- `LiberoPlusBackendConfig` (env prefix: `SIM_LIBERO_PLUS_`)
-- `server.py` -- `_handle_set_camera()` and `_handle_get_observation()` handlers
-- `client/client.py` -- `set_camera()` and `get_observation()` client methods
+- `server.py` -- `_handle_set_camera()`, `_handle_get_observation()` and `_handle_get_depth()` handlers
+- `client/client.py` -- `set_camera()`, `get_observation()` and `get_depth()` client methods
 
 ## Adding a New Backend
 

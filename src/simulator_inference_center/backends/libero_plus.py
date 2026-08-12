@@ -298,6 +298,87 @@ class LiberoPlusBackend(LiberoBackend):
         self._env.sim.forward()
         return self.get_observation()
 
+    def get_depth(
+        self,
+        camera_name: str = "agentview",
+        with_rgb: bool = False,
+    ) -> dict[str, Any]:
+        """Render the CURRENT scene and return GROUND-TRUTH METRIC depth.
+
+        MuJoCo's offscreen renderer hands back the raw OpenGL depth buffer,
+        which is NORMALISED to [0, 1] and nonlinear in distance. This method
+        inverts that mapping to metres with the standard dm_control /
+        robosuite formula (``robosuite.utils.camera_utils.get_real_depth_map``)::
+
+            extent = model.stat.extent
+            near   = model.vis.map.znear * extent
+            far    = model.vis.map.zfar  * extent
+            z_m    = near / (1 - z_norm * (1 - near / far))
+
+        ORIENTATION (the thing that silently corrupts geometry downstream):
+        the returned depth is oriented EXACTLY like the matching
+        ``<camera_name>_image`` in ``get_observation()`` — the same
+        ``robosuite.macros.IMAGE_CONVENTION`` slice is applied to both, and
+        both come out of one ``sim.render(..., depth=True)`` call. With
+        LIBERO's default ``IMAGE_CONVENTION="opengl"`` that means row 0 = the
+        BOTTOM of the image, matching the RGB frames this server ships. Pass
+        ``with_rgb=True`` to get the RGB from the same render call so a caller
+        can assert byte-equality against the observation image and prove the
+        alignment instead of assuming it.
+
+        Parameters
+        ----------
+        camera_name:
+            MuJoCo camera name (e.g. ``"agentview"``).
+        with_rgb:
+            Also return the RGB rendered in the same call (alignment check).
+
+        Returns
+        -------
+        dict
+            ``{"depth": <ndarray descriptor (H, W) float32 metres>,
+               "camera_name", "near", "far", "height", "width", "units": "m",
+               ["rgb": <ndarray descriptor (H, W, 3) uint8>]}``
+        """
+        if self._env is None:
+            raise RuntimeError("No task loaded. Call load_task() first.")
+
+        import robosuite.macros as macros
+        from robosuite.utils.mjcf_utils import IMAGE_CONVENTION_MAPPING
+
+        sim = self._env.env.sim
+        height = int(self._config.render_height)
+        width = int(self._config.render_width)
+        rgb, z_norm = sim.render(
+            camera_name=camera_name, width=width, height=height, depth=True,
+        )
+        convention = IMAGE_CONVENTION_MAPPING[macros.IMAGE_CONVENTION]
+        z_norm = np.asarray(z_norm, dtype=np.float64)[::convention]
+        rgb = np.asarray(rgb)[::convention]
+
+        extent = float(sim.model.stat.extent)
+        near = float(sim.model.vis.map.znear) * extent
+        far = float(sim.model.vis.map.zfar) * extent
+        z_norm = np.clip(z_norm, 0.0, 1.0)
+        depth_m = near / (1.0 - z_norm * (1.0 - near / far))
+
+        out: dict[str, Any] = {
+            "depth": encode_ndarray(
+                np.ascontiguousarray(depth_m, dtype=np.float32)
+            ),
+            "camera_name": camera_name,
+            "near": near,
+            "far": far,
+            "height": height,
+            "width": width,
+            "units": "m",
+        }
+        if with_rgb:
+            out["rgb"] = encode_ndarray(
+                np.ascontiguousarray(rgb, dtype=np.uint8)
+            )
+        return out
+
     def get_observation(self) -> dict[str, Any]:
         """Re-render the current scene and return an observation dict.
 

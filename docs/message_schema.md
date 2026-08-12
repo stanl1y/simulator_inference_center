@@ -272,6 +272,57 @@ simulation. Only supported by backends that implement this method (e.g.
 
 ---
 
+## Method: `get_depth`
+
+Ground-truth **metric** depth for the current scene, without stepping the
+simulation. Only supported by backends that implement it (e.g. `libero_plus`).
+
+MuJoCo's renderer returns the raw OpenGL depth buffer, normalised to [0, 1]
+and nonlinear in distance. The backend inverts that to METRES using
+`near / (1 - z_norm * (1 - near/far))` with `near = model.vis.map.znear *
+model.stat.extent` and `far = model.vis.map.zfar * model.stat.extent` (the
+dm_control / `robosuite.utils.camera_utils.get_real_depth_map` formula).
+
+The depth array is oriented EXACTLY like the matching `<camera_name>_image` in
+`get_observation()` (same `robosuite.macros.IMAGE_CONVENTION` slice, same
+`sim.render()` call) — with LIBERO's default `"opengl"` convention that means
+row 0 = bottom of the image. Set `with_rgb: true` to also get the RGB from that
+same render call, so a client can assert byte-equality against the observation
+image and prove the alignment instead of assuming it.
+
+### Request
+
+```python
+{
+    "method": "get_depth",
+    "camera_name": "agentview",   # optional, default "agentview"
+    "with_rgb": False              # optional, default False
+}
+```
+
+### Response
+
+```python
+{
+    "status": "ok",
+    "depth": <Array>,      # (H, W) float32, METRES
+    "camera_name": "agentview",
+    "near": 0.0...,        # metres
+    "far": 30.0...,        # metres
+    "height": 256,
+    "width": 256,
+    "units": "m",
+    "rgb": <Array>         # (H, W, 3) uint8, only when with_rgb=True
+}
+```
+
+### Errors
+
+- `unknown_method` if the backend does not support `get_depth`
+- `backend_error` if no task is loaded or the camera name is invalid
+
+---
+
 ## Data Encoding
 
 ### Observation Encoding
@@ -399,4 +450,5 @@ The server/backend should normalize both forms internally.
 | `get_info`        | (none)                                      | `backend_name`, `backend_version`, `current_task`, ...   |
 | `set_camera`      | `camera_name`, `position`, `quaternion`     | `observation: dict` (re-rendered)                        |
 | `get_observation` | (none)                                      | `observation: dict` (current frame)                      |
+| `get_depth`       | `camera_name`, `with_rgb`                    | `depth` (H,W) float32 metres, `near`, `far`, `units`, [`rgb`] |
 | `disconnect`      | (none)                                      | (status only)                                            |

@@ -136,6 +136,7 @@ class InferenceServer:
             "set_camera": self._handle_set_camera,
             "set_lighting": self._handle_set_lighting,
             "get_observation": self._handle_get_observation,
+            "get_depth": self._handle_get_depth,
             "disconnect": self._handle_disconnect,
         }.get(method)
 
@@ -427,6 +428,33 @@ class InferenceServer:
             logger.exception("backend.get_observation() failed")
             return self._make_error("backend_error", str(exc))
         return {"status": "ok", "observation": observation}
+
+    def _handle_get_depth(
+        self, identity: bytes, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Ground-truth METRIC depth for the current scene (backend-optional).
+
+        Additive: backends without ``get_depth`` answer ``unknown_method``, so
+        nothing that worked before changes.
+        """
+        session = self._get_or_create_session(identity)
+        err = self._require_backend(session, "get_depth")
+        if err is not None:
+            return err
+        if not hasattr(session.backend, "get_depth"):
+            return self._make_error(
+                "unknown_method", "Backend does not support get_depth"
+            )
+        camera_name = request.get("camera_name", "agentview")
+        with_rgb = bool(request.get("with_rgb", False))
+        try:
+            payload = session.backend.get_depth(
+                camera_name=camera_name, with_rgb=with_rgb
+            )
+        except Exception as exc:
+            logger.exception("backend.get_depth() failed")
+            return self._make_error("backend_error", str(exc))
+        return {"status": "ok", **payload}
 
     def _handle_disconnect(
         self, identity: bytes, request: dict[str, Any]

@@ -252,6 +252,42 @@ class SimulatorClient:
         self._check_response(resp)
         return _decode_observation(resp["observation"])
 
+    def get_depth(
+        self,
+        camera_name: str = "agentview",
+        with_rgb: bool = False,
+    ) -> dict[str, Any]:
+        """Ground-truth METRIC depth (metres) for the current scene.
+
+        The returned ``depth`` array is (H, W) float32 in METRES and is
+        oriented EXACTLY like the matching ``<camera_name>_image`` in
+        ``get_observation()`` (LIBERO default: row 0 = bottom of the image).
+        Pass ``with_rgb=True`` to also get the RGB from the SAME render call,
+        which lets a caller assert byte-equality with the observation image and
+        so prove the depth is aligned rather than assume it.
+
+        Returns
+        -------
+        dict
+            ``{"depth": (H, W) float32 metres, "camera_name", "near", "far",
+               "height", "width", "units", ["rgb": (H, W, 3) uint8]}``
+        """
+        resp = self._send_request({
+            "method": "get_depth",
+            "camera_name": camera_name,
+            "with_rgb": bool(with_rgb),
+        })
+        self._check_response(resp)
+        out: dict[str, Any] = {}
+        for key, value in resp.items():
+            if key == "status":
+                continue
+            if isinstance(value, dict) and value.get("__type__") == "ndarray":
+                out[key] = _decode_ndarray(value)
+            else:
+                out[key] = value
+        return out
+
     def get_info(self) -> dict[str, Any]:
         """Get server/backend info."""
         resp = self._send_request({"method": "get_info"})
